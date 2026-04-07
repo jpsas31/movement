@@ -1,0 +1,1008 @@
+**Navigation:** [README](README.md) | [Contributing](CONTRIBUTING.md) | [Code of Conduct](CODE_OF_CONDUCT.md)
+
+---
+
+# MilkDrop / Butterchurn Preset Authoring Guide
+
+## Preset Structure
+
+A preset is either a `.milk` INI-like text file (for MilkDrop) or a JSON/TS object (for butterchurn). Both share the same logical sections:
+
+```
+baseVals        — global numeric parameters
+init_eqs_str    — runs once on load
+frame_eqs_str   — runs every frame
+pixel_eqs_str   — runs per mesh vertex
+warp            — GLSL fragment shader (distortion pass)
+comp            — GLSL fragment shader (final composite pass)
+waves[]         — up to 4 waveform objects
+shapes[]        — up to 4 shape objects
+```
+
+Butterchurn JSON skeleton:
+
+```json
+{
+  "version": 2,
+  "baseVals": { "decay": 0.98, "zoom": 1.01 },
+  "init_eqs_str": "",
+  "frame_eqs_str": "a.q1=a.bass; a.q2=a.mid; a.q3=a.treb;",
+  "pixel_eqs_str": "",
+  "warp": "",
+  "comp": "",
+  "waves": [
+    { "baseVals": { "enabled": 0 }, "init_eqs_str": "", "frame_eqs_str": "", "point_eqs_str": "" },
+    { "baseVals": { "enabled": 0 }, "init_eqs_str": "", "frame_eqs_str": "", "point_eqs_str": "" },
+    { "baseVals": { "enabled": 0 }, "init_eqs_str": "", "frame_eqs_str": "", "point_eqs_str": "" },
+    { "baseVals": { "enabled": 0 }, "init_eqs_str": "", "frame_eqs_str": "", "point_eqs_str": "" }
+  ],
+  "shapes": [
+    { "baseVals": { "enabled": 0 }, "init_eqs_str": "", "frame_eqs_str": "" },
+    { "baseVals": { "enabled": 0 }, "init_eqs_str": "", "frame_eqs_str": "" },
+    { "baseVals": { "enabled": 0 }, "init_eqs_str": "", "frame_eqs_str": "" },
+    { "baseVals": { "enabled": 0 }, "init_eqs_str": "", "frame_eqs_str": "" }
+  ]
+}
+```
+
+> **Rules:** `waves` and `shapes` must always have exactly 4 entries. Leave `warp`/`comp` as `""` for default behavior.
+
+---
+
+## Custom presets in this repository (Movement)
+
+Local presets live under `src/presets/` and are registered in **`src/presets/custom-registry.ts`**. Each exports a **`build(tier: VizIntensity)`** function (`mild` | `normal` | `hot`). **Stock** presets from `butterchurn-presets` scale audio with a shared analyser gain when you press **Y**; **custom** presets keep unity gain and encode intensity only inside their own `build()` math (see `src/viz-intensity.ts` and `src/main.ts`).
+
+**Add a new custom preset**
+
+1. Implement `createMyPreset(tier)` returning a full preset object (`version: 2`, `baseVals`, `warp`, `comp`, equations, four waves, four shapes).
+2. Export a canonical id (e.g. `export const MY_PRESET_KEY = "my-preset"`) and a **sort key** with a leading space if you want it grouped near the top of the alphabetically sorted list: `export const MY_PRESET_KEY_SORTED = "  my-preset"`.
+3. Append `{ canonicalId: MY_PRESET_KEY, build: createMyPreset }` to **`CUSTOM_PRESET_REGISTRY`**.
+4. In **`src/main.ts`**, assign `presets[MY_PRESET_KEY_SORTED] = {} as object` before `rebuildAllCustomSlots` (same pattern as `nebula-pearl`).
+
+**Shipped custom presets**
+
+| File                  | Map key (trimmed)  | Role                                                                                                                                              |
+| --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nebula-pearl.ts`     | `nebula-pearl`     | Magellan-class warp + comp + shape; audio-tinted comp via `q10`–`q12`                                                                             |
+| `royal-star-forge.ts` | `royal-star-forge` | Star Forge v16 motion + Royal Mashup (220) palette / waves; comp tint via `q14`–`q16` (avoids Star Forge’s use of `q11`–`q13` in `frame_eqs_str`) |
+| `lines.ts`            | `lines`            | Minimal line waves                                                                                                                                |
+
+---
+
+## How a frame is rendered (MilkDrop 2 / Butterchurn)
+
+Butterchurn is a WebGL port of **MilkDrop 2**’s programmable preset model. The official mental model is documented in Ryan Geiss’s [MilkDrop preset authoring guide](http://www.geisswerks.com/milkdrop/milkdrop_preset_authoring.html) (see _pixel shaders → conceptual overview / WARP / COMPOSITE_). A more tutorial-style companion site is [milkdrop.co.uk](http://www.milkdrop.co.uk/). The implementation lives in [jberg/butterchurn](https://github.com/jberg/butterchurn).
+
+### One frame, in order
+
+1. **Preset equations** — `init_eqs_str` (once), then each frame: `frame_eqs_str`, per-shape / per-wave equations, and **`pixel_eqs_str` at each vertex** of an internal mesh. Those per-vertex outputs mainly drive **warp sampling**: they offset the `uv` used when the warp shader reads the previous frame.
+
+2. **Warp shader** — Runs on every pixel of an **internal double-buffered texture**. Input is typically `sampler_main` (last frame’s image) at **warped** `uv`. Output is written back into that internal buffer. Effects here **persist**: feedback, smear, and **per-pixel color tricks applied to the feedback image** (e.g. cross products) accumulate frame-to-frame. Geiss: _“Any special effects that happen here get ‘baked’ into the image.”_
+
+3. **Composite shader** — Runs on the **display**. It samples the **internal canvas** (usually at **undistorted** screen `uv`), applies final mapping (polar remaps, brighten, vignette, etc.), and outputs what you see. Geiss: _“Anything you do here will NOT affect the subsequent frame.”_
+
+4. **Waves / shapes** — Drawn in the pipeline as separate layers according to `baseVals` and their equations (exact order relative to warp/comp is handled inside the engine; the important part is they are not the same code path as the warp shader).
+
+### Why this matters for “mixing” presets
+
+- **Motion and low-level texture** mostly come from **warp** + **decay/echo** + **pixel_eqs** (what gets fed back each frame).
+- **Final silhouette tricks** (e.g. Magellan’s corona) often live in **comp**, but comp can only **reinterpret** the image the warp already built. It cannot recreate mother-of-pearl’s **warp-stage** iridescence if you keep a different warp.
+- **Uniform tinting** in comp (replacing `vec3` constants with `q10,q11,q12`) changes **overall colorization** of whatever structure the warp produced; it does **not** inject the donor’s **per-pixel, view-dependent** color math from the donor’s warp.
+
+---
+
+## ⚠️ Butterchurn vs MilkDrop Equation Syntax
+
+**This is the most important thing to get right when writing presets directly for butterchurn.**
+
+MilkDrop and butterchurn use _different_ equation formats:
+
+|                 | MilkDrop (`.milk` file)       | Butterchurn (`_str` fields)                  |
+| --------------- | ----------------------------- | -------------------------------------------- |
+| Field suffix    | `_eel`                        | `_str`                                       |
+| Variable prefix | none — `bass`, `zoom`, `t1`   | `a.` — `a.bass`, `a.zoom`, `a.t1`            |
+| Math functions  | `sin(x)`, `cos(x)`, `sqrt(x)` | `Math.sin(x)`, `Math.cos(x)`, `Math.sqrt(x)` |
+| Control flow    | `if(cond, a, b)`              | `above(a,b)` still works; `if()` may not     |
+
+Butterchurn's `_str` fields contain **pre-compiled JavaScript** with an `a.` namespace object. Every variable — audio inputs, time, state, position — lives on `a.`:
+
+```js
+// Butterchurn equation string syntax
+a.t1 = 0.15 + Math.sin(a.time * 0.13) * 0.1;
+a.r = 1.0;
+a.g = 0.1 + a.bass * 0.4;
+a.a = 0.4 + a.bass * 1.2;
+```
+
+The `above(x, y)` and `below(x, y)` helpers are still available as globals (not on `a.`):
+
+```js
+a.beat = above(a.bass, a.bass_att * 1.3) ? 1 : 0;
+```
+
+**When converting from MilkDrop EEL → butterchurn `_str`:**
+
+1. Rename all `_eel` field keys to `_str`
+2. Prefix every variable with `a.` (e.g. `bass` → `a.bass`, `t1` → `a.t1`, `q1` → `a.q1`)
+3. Replace bare math functions: `sin(` → `Math.sin(`, `cos(` → `Math.cos(`, etc.
+
+> If you author presets in MilkDrop3 and convert them with `milkdrop-preset-converter-node`, this translation is done automatically — you only need to worry about it when writing presets by hand for butterchurn.
+
+---
+
+## EEL Equation Language
+
+Simple C-like scripting. All values are 64-bit floats. Statements end with `;`. No block constructs — control flow uses function calls.
+
+### Operators
+
+| Operator          | Description                    |
+| ----------------- | ------------------------------ |
+| `+ - * / %`       | Arithmetic                     |
+| `^`               | Power (`x^2` = x squared)      |
+| `= += -= *= /=`   | Assignment                     |
+| `< > == != <= >=` | Comparison (return 1.0 or 0.0) |
+| `!`               | Logical NOT                    |
+| `& \|`            | Bitwise AND/OR                 |
+
+### Math Functions
+
+```c
+sin(x)   cos(x)   tan(x)   asin(x)   acos(x)   atan(x)   atan2(y,x)
+sqrt(x)  sqr(x)   pow(x,y) exp(x)    log(x)    abs(x)    sign(x)
+min(a,b) max(a,b) floor(x) ceil(x)   int(x)    mod(x,y)
+rand(x)  // random integer 0..x-1 (re-evaluated each frame)
+```
+
+### Control Flow
+
+```c
+if(cond, true_val, false_val)   // both branches always evaluated
+equal(a, b)   // 1 if a==b else 0
+above(a, b)   // 1 if a>b  else 0
+below(a, b)   // 1 if a<b  else 0
+band(a, b)    // boolean AND
+bor(a, b)     // boolean OR
+```
+
+Example:
+
+```c
+// Clamp zoom between 0.5 and 2.0
+zoom = if(above(zoom, 2.0), 2.0, if(below(zoom, 0.5), 0.5, zoom));
+```
+
+### Audio Variables (read-only)
+
+| Variable        | Range | Description                 |
+| --------------- | ----- | --------------------------- |
+| `bass`          | 0..~3 | Low-frequency energy        |
+| `mid`           | 0..~3 | Mid-frequency energy        |
+| `treb`          | 0..~3 | High-frequency energy       |
+| `bass_att`      | 0..~3 | Smoothed bass (slow attack) |
+| `mid_att`       | 0..~3 | Smoothed mid                |
+| `treb_att`      | 0..~3 | Smoothed treble             |
+| `vol` `vol_att` | 0..~3 | Overall volume / smoothed   |
+
+### Time Variables (read-only)
+
+| Variable            | Description                             |
+| ------------------- | --------------------------------------- |
+| `time`              | Seconds since start (always increasing) |
+| `frame`             | Frame count                             |
+| `fps`               | Current framerate                       |
+| `meshx` `meshy`     | Warp mesh dimensions                    |
+| `aspectx` `aspecty` | Aspect ratio correction factors         |
+
+### State Variables
+
+| Variable    | Description                                                        |
+| ----------- | ------------------------------------------------------------------ |
+| `q1`..`q32` | Bridge EEL → GLSL shaders; **persist across frames**               |
+| `t1`..`t8`  | Per-wave/shape state; persist across frames within that wave/shape |
+
+---
+
+## Per-Frame vs Per-Vertex Equations
+
+### `frame_eqs_str` — once per frame
+
+Update animation state, read audio, pass values to shaders:
+
+```js
+a.q1 = a.bass;
+a.q2 = a.mid;
+a.q3 = a.treb;
+a.phase = a.phase + 0.01 + a.mid * 0.003; // accumulates forever
+a.zoom = 1.0 + a.bass * 0.025;
+a.rot = a.rot + 0.003 + a.mid * 0.008;
+a.decay = 0.97 + a.vol_att * 0.02;
+```
+
+### `pixel_eqs_str` — once per mesh vertex (~1700×/frame)
+
+Controls where each vertex samples the previous frame (the warp). Writeable per-vertex:
+
+| Variable    | Description                      |
+| ----------- | -------------------------------- |
+| `x` `y`     | Vertex position 0..1 (read-only) |
+| `rad` `ang` | Polar coords from center         |
+| `zoom`      | Per-vertex zoom                  |
+| `rot`       | Per-vertex rotation              |
+| `dx` `dy`   | Per-vertex translation           |
+| `cx` `cy`   | Center of rotation               |
+| `sx` `sy`   | Stretch                          |
+| `warp`      | Per-vertex warp strength         |
+
+```js
+// Spatially varying rotation — edges spin faster
+a.rot = a.rot + a.rad * 0.05;
+
+// Swirl
+a.ang = a.ang + a.rad * a.q1 * 0.3;
+
+// Lens/bulge
+a.zoom = a.zoom * (1.0 + 0.1 * (1.0 - a.rad));
+```
+
+---
+
+## baseVals — All Parameters
+
+### Core
+
+| Parameter   | Range     | Description                                                           |
+| ----------- | --------- | --------------------------------------------------------------------- |
+| `decay`     | 0..1      | Previous frame persistence. `1.0` = infinite trails, `0.98` = typical |
+| `gammaadj`  | 0.01..8   | Brightness (>1 brightens)                                             |
+| `zoom`      | 0.01..100 | Zoom per frame (>1 zooms in = tunnel)                                 |
+| `zoomexp`   | 0.01..10  | Radial zoom exponent                                                  |
+| `rot`       | any       | Rotation per frame (radians)                                          |
+| `cx` `cy`   | 0..1      | Center of rotation/zoom                                               |
+| `dx` `dy`   | -1..1     | Translation per frame                                                 |
+| `sx` `sy`   | 0.01..100 | Stretch                                                               |
+| `warp`      | 0..100    | Built-in animated warp amplitude                                      |
+| `warpscale` | 0.01..10  | Warp spatial scale                                                    |
+| `warpspeed` | 0..10     | Warp animation speed                                                  |
+
+### Blur Passes (3 available)
+
+| Parameter   | Description                   |
+| ----------- | ----------------------------- |
+| `b1n` `b1x` | Blur pass 1 min/max           |
+| `b2n` `b2x` | Blur pass 2 min/max           |
+| `b3n` `b3x` | Blur pass 3 min/max           |
+| `b1ed`      | Edge darken amount for pass 1 |
+
+---
+
+## Warp Shader (GLSL)
+
+Runs **before** geometry drawing. Distorts the feedback buffer. Leave as `""` for default.
+
+### Uniforms
+
+```glsl
+uniform float time, fps, frame;
+uniform float bass, mid, treb, bass_att, mid_att, treb_att, vol;
+uniform float q1, q2, /* ... */ q32;       // from frame_eqs_str (a.q1..a.q32)
+uniform float zoom, rot, warp, decay, cx, cy, dx, dy, sx, sy;
+uniform vec2  resolution;
+
+uniform sampler2D sampler_main;            // previous frame
+uniform sampler2D sampler_blur1;           // blur passes
+uniform sampler2D sampler_blur2;
+uniform sampler2D sampler_blur3;
+uniform sampler2D sampler_noise_lq;        // 256x256 tiling noise
+uniform sampler2D sampler_noise_hq;
+
+varying vec2 uv;                           // 0..1 screen coords
+varying vec2 uv_orig;                      // pre-warp uv
+```
+
+### Examples
+
+```glsl
+// Kaleidoscope (6-fold symmetry)
+shader_body {
+  vec2 p = uv - 0.5;
+  float a = atan(p.y, p.x);
+  float r = length(p);
+  a = mod(a, 3.14159 / 6.0) * 6.0;
+  p = r * vec2(cos(a), sin(a)) + 0.5;
+  ret = texture2D(sampler_main, p).rgb;
+}
+
+// Noise-driven color pulse
+shader_body {
+  vec4 c = texture2D(sampler_main, uv);
+  vec4 n = texture2D(sampler_noise_lq, uv * 2.0 + vec2(time * 0.1, 0.0));
+  c.rgb += n.rgb * q1 * 0.05;
+  ret = c.rgb;
+}
+
+// Mirror (left half mirrors right)
+shader_body {
+  vec2 p = uv;
+  p.x = 0.5 - abs(p.x - 0.5);
+  ret = texture2D(sampler_main, p).rgb;
+}
+```
+
+---
+
+## Comp Shader (GLSL)
+
+Runs **last**, after all waves and shapes are drawn. Same uniforms as warp. `sampler_main` is now the fully composited frame.
+
+```glsl
+// Vignette
+shader_body {
+  vec4 c = texture2D(sampler_main, uv);
+  float r = length(uv - 0.5) * 1.414;
+  c.rgb *= 1.0 - r * r * 0.5;
+  ret = c.rgb;
+}
+
+// Bloom/glow on treble
+shader_body {
+  vec4 sharp  = texture2D(sampler_main, uv);
+  vec4 blurry = texture2D(sampler_blur1, uv);
+  vec3 glow   = max(blurry.rgb - 0.3, 0.0) * 2.0;
+  ret = sharp.rgb + glow * q3;
+}
+
+// Chromatic aberration driven by bass
+shader_body {
+  float amt = q1 * 0.005;
+  float r = texture2D(sampler_main, uv + vec2(amt, 0.0)).r;
+  float g = texture2D(sampler_main, uv).g;
+  float b = texture2D(sampler_main, uv - vec2(amt, 0.0)).b;
+  ret = vec3(r, g, b);
+}
+```
+
+---
+
+## Waves
+
+Up to 4 waves. Each draws an audio waveform as a polyline or dot series.
+
+### Wave baseVals
+
+| Parameter       | Description                                 |
+| --------------- | ------------------------------------------- |
+| `enabled`       | 0/1                                         |
+| `samples`       | 2..512 audio samples                        |
+| `spectrum`      | 0 = waveform, 1 = frequency spectrum        |
+| `r` `g` `b` `a` | Base color                                  |
+| `smoothing`     | 0..1 smoothing along the wave               |
+| `usedots`       | Draw as dots instead of lines               |
+| `thick`         | Thick lines (2px)                           |
+| `additive`      | Additive blending                           |
+| `x` `y`         | Center position                             |
+| `scaling`       | Amplitude scale (affects `value1`/`value2`) |
+
+### Wave per-frame equations (`frame_eqs_str`)
+
+Runs once/frame. Animate color, position, etc. `a.t1..a.t8` for per-wave persistent state:
+
+```js
+a.t1 = a.t1 + 0.02;
+a.r = 0.5 + 0.5 * Math.sin(a.t1);
+a.g = 0.5 + 0.5 * Math.sin(a.t1 + 2.094);
+a.b = 0.5 + 0.5 * Math.sin(a.t1 + 4.189);
+a.a = 0.5 + 0.3 * a.bass;
+```
+
+### Wave point equations (`point_eqs_str`)
+
+Runs per sample. Write to `a.x`, `a.y`, `a.r`, `a.g`, `a.b`, `a.a` to position/color each point:
+
+| Variable   | Description                                                   |
+| ---------- | ------------------------------------------------------------- |
+| `a.sample` | Sample index 0..1                                             |
+| `a.value1` | Left channel audio at this point (-1..1, scaled by `scaling`) |
+| `a.value2` | Right channel audio (-1..1)                                   |
+
+```js
+// Lissajous (L/R channels → X/Y axes)
+a.x = 0.5 + a.value1 * 0.4;
+a.y = 0.5 + a.value2 * 0.4;
+
+// Circle wave
+var theta = a.sample * 6.28318;
+var r = 0.3 + a.value1 * 0.1 * a.bass;
+a.x = 0.5 + Math.cos(theta) * r;
+a.y = 0.5 + Math.sin(theta) * r;
+
+// Spectrum bars with frequency coloring
+a.x = a.sample;
+a.y = 0.5 - a.value1 * 0.4;
+a.r = 1.0 - a.sample;
+a.g = 1.0 - Math.abs(a.sample - 0.5) * 2.0;
+a.b = a.sample;
+
+// Flat horizontal line (drifting y, thickness driven by audio)
+a.x = a.sample;
+a.y = a.t1 + Math.sin(a.sample * 18.85) * a.t2;
+```
+
+---
+
+## Shapes
+
+Up to 4 shapes. Procedurally drawn polygons/circles.
+
+### Shape baseVals
+
+| Parameter            | Description                      |
+| -------------------- | -------------------------------- |
+| `enabled`            | 0/1                              |
+| `sides`              | 3..100 sides (100 ≈ circle)      |
+| `x` `y`              | Center position                  |
+| `rad`                | Radius                           |
+| `ang`                | Rotation angle (radians)         |
+| `r` `g` `b` `a`      | Outer/fill color                 |
+| `r2` `g2` `b2` `a2`  | Inner color (gradient center)    |
+| `border_r/g/b/a`     | Border color                     |
+| `additive`           | Additive blending                |
+| `textured`           | Sample previous frame as texture |
+| `tex_zoom` `tex_ang` | Texture zoom/rotation            |
+
+### Shape per-frame equations (`frame_eqs_str`)
+
+```js
+// Pulsing beat ring
+a.t1 = a.t1 + 0.02;
+a.rad = 0.05 + a.bass * 0.08;
+a.ang = a.t1 * 2.0;
+a.r = 0.5 + 0.5 * Math.sin(a.t1 * 1.3);
+a.g = 0.5 + 0.5 * Math.sin(a.t1 * 0.7 + 2.0);
+a.b = 0.5 + 0.5 * Math.sin(a.t1 * 1.1 + 4.0);
+a.a = 0.0;
+a.border_a = 0.8;
+a.border_r = a.r;
+a.border_g = a.g;
+a.border_b = a.b;
+```
+
+---
+
+## Audio Reactivity Patterns
+
+### Beat Detection
+
+```js
+// frame_eqs_str — fires when bass sharply exceeds its running average
+a.beat = above(a.bass, a.bass_att * 1.3) && !above(a.cooldown, 0) ? 1 : 0;
+a.cooldown = Math.max(0, a.cooldown - 1) + a.beat * 20;
+a.q7 = a.beat ? 1.0 : a.q7 * 0.85; // decaying trigger pulse
+```
+
+### Smooth Envelope (fast attack, slow release)
+
+```js
+a.smooth = above(a.bass, a.smooth) ? a.bass : a.smooth * 0.95;
+```
+
+### Common Recipes
+
+```js
+a.zoom = 1.0 + a.bass * 0.03; // zoom pulse on bass
+a.rot = a.rot + a.mid * 0.01; // spin on mid
+a.decay = 0.95 + a.vol_att * 0.04; // trail length by volume
+a.phase = a.phase + 0.01; // color cycle accumulator
+a.q10 = Math.sin(a.phase); // pass to GLSL for hue rotation
+a.q11 = Math.sin(a.phase + 2.094);
+a.q12 = Math.sin(a.phase + 4.189);
+```
+
+---
+
+## Common Visual Techniques
+
+| Effect                 | How                                                     |
+| ---------------------- | ------------------------------------------------------- |
+| **Tunnel**             | `zoom = 1.05` constant                                  |
+| **Spiral tunnel**      | `zoom = 1.05` + `rot = 0.01`                            |
+| **Long trails**        | `decay = 0.97..0.995`                                   |
+| **Snappy / no trails** | `decay = 0.3..0.85`                                     |
+| **Swirl**              | per-vertex: `ang = ang + rad * q1 * 0.3`                |
+| **Kaleidoscope**       | Fold `ang` per-vertex or in warp GLSL                   |
+| **Lens/bulge**         | per-vertex: `zoom = zoom * (1.0 + 0.1 * (1.0 - rad))`   |
+| **Color cycle**        | Accumulate `phase`, use `sin(phase + offset)` for r/g/b |
+| **Beat flash**         | Shape with `a = q7 * 0.9` (q7 = decaying beat trigger)  |
+| **Glow**               | Comp shader: sample `sampler_blur1`, add to sharp       |
+| **Mirror**             | Warp GLSL: `p.x = 0.5 - abs(p.x - 0.5)`                 |
+| **Galaxy arms**        | per-vertex: `rot = 0.02 * rad`                          |
+| **Freeze trails**      | `decay = 1.0` + `warp = 0` + `zoom = 1.0` + `rot = 0`   |
+
+---
+
+## Converting .milk → Butterchurn JSON
+
+Use `milkdrop-preset-converter-node`:
+
+```bash
+git clone https://github.com/jberg/milkdrop-preset-converter-node.git
+cd milkdrop-preset-converter-node
+yarn install && yarn build
+
+# Convert a folder of .milk files to JSON
+yarn run convert /path/to/milk-files /path/to/output
+```
+
+Then load in your app:
+
+```ts
+import myPreset from "./my-preset.json";
+visualizer.loadPreset(myPreset, 0);
+```
+
+### Troubleshooting conversion issues
+
+Some presets (e.g. Mandelverse) may exhibit a black screen if the conversion is incomplete. Two common causes:
+
+- **Incorrect `convertPresetEquations` argument order**: The library expects `(pixel_eqs_eel, init_eqs_eel, frame_eqs_eel)`. Passing `(init_eqs_eel, frame_eqs_eel, pixel_eqs_eel)` results in an empty `pixel_eqs_str` and a truncated `frame_eqs_str`, causing loss of motion logic and eventual blackouts.
+
+- **`q16` initialized to zero**: If `q16` becomes zero, shader divisions by `q16` produce black. The converter sometimes fails to emit the original `q16 = 1 + rand(2)` from the `.milk` file. Add a post-processing step to enforce `a['q16'] = 1.0 + Math.random() * 2;` in `init_eqs_str`.
+
+The Mandelverse preset in this repo demonstrates the fix: `scripts/build-mandelverse-butterchurn.mjs` applies both steps and rebuilds the JSON.
+
+### Division by zero in custom presets
+
+When mashing presets, watch for **q-registers used in division** (`q7`, `q16` most common). If initialized to zero, the preset renders black:
+
+| Register | Used in                                                           | Solution                           |
+| -------- | ----------------------------------------------------------------- | ---------------------------------- |
+| `q7`     | Mandelverse/organic: `a['uvx']=div(a['reg26']*a['dist'],a['q7'])` | Set `a['q7']=0.25` in init         |
+| `q16`    | Pixel eqs: `a.dx=-a.q12/a.q16*...`                                | Set `a['q16']=(1+rand(2))` in init |
+
+**Correct init syntax**: Use bracket notation matching the JSON output:
+
+```js
+// Correct (matches butterchurn JSON output)
+a["q7"] = 0.25;
+a["q16"] = 1 + rand(2);
+a["q8"] = rand(2.0) - 1.0;
+
+// Avoid (different syntax, may not compile)
+a.q7 = 0.25;
+a.q16 = 1 + Math.random() * 2;
+```
+
+Also ensure buffer arrays are initialized if the preset uses them (common in Mandelverse-style fractals):
+
+```js
+for (var mdparser_idx1 = 0; mdparser_idx1 < 10000; mdparser_idx1++) {
+  a["gmegabuf"][Math.floor(a["n"])] = 0;
+  a["n"] = a["n"] + 1;
+}
+a["n"] = 0;
+for (var mdparser_idx2 = 0; mdparser_idx2 < 10000; mdparser_idx2++) {
+  a["megabuf"][Math.floor(a["n"])] = 0;
+  a["n"] = a["n"] + 1;
+}
+```
+
+### Comp shader injection patterns
+
+When adding color from a donor preset to an existing comp, **do not replace the entire comp shader**. The comp defines the entire output pipeline — swapping it changes shape, not just color.
+
+**Wrong approach** — replacing the whole comp:
+
+```glsl
+// Donor's comp uses different UV mapping, grayscale conversion, noise displacement
+// This destroys the host's geometric structure
+```
+
+**Right approach** — apply channel permutation to the already-colored image, then mix back:
+
+```glsl
+// Keep host's existing color computation (e.g. hue_shader, gradients, etc.)
+ret_1 = (((texture(sampler_main, uv).x * (1.0 - sqrt(dot(x_3, x_3))))
+         * pow(hue_shader, vec3(6.0, 6.0, 6.0))) * 1.4);
+// ... rest of host's comp logic ...
+
+// Apply Mandelverse-style channel permutation to the result
+vec3 mandelCol;
+mandelCol.x = abs(q21) + abs(q20);
+mandelCol.y = abs(q22) + abs(q21);
+mandelCol.z = abs(q20) + abs(q22);
+mandelCol = log(exp2((3.141593 * mandelCol) * ret_1.yzx));
+
+// Mix with original — preserves shape, adds iridescent color cycling
+ret_1 = mix(ret_1, mandelCol, 0.6 + 0.4 * q15);
+```
+
+**Why this works:**
+
+- `log(exp2(pi * colVec * ret_1.yzx))` permutes RGB channels, creating iridescent color cycling
+- `colVec` from `abs(q20-q22)` sums drives per-channel intensity (from host's frame_eqs rotation matrix)
+- Mixing back preserves the host's geometric structure while layering the donor's color math
+- `q15` (or any unused q-register) controls the blend amount, allowing audio-reactive color intensity
+
+**Key lesson:** Color injection in comp works by **post-processing the final image**, not by replacing the rendering pipeline. The host's shape comes from warp + comp structure; color comes from what you do to `ret_1` before `ret = ret_1`.
+
+### Multi-color structures via luminance-based channel permutation
+
+To show **multiple colors simultaneously** within the same structure (not vertical bands), select the channel permutation based on **pixel luminance** instead of spatial position:
+
+```glsl
+vec3 rawCol = texture(sampler_main, uv).xyz;
+float lum = dot(rawCol, vec3(0.299, 0.587, 0.114));
+vec3 colVec;
+colVec.x = abs(q21) + abs(q20);
+colVec.y = abs(q22) + abs(q21);
+colVec.z = abs(q20) + abs(q22);
+vec3 c1 = log(exp2((3.141593 * colVec) * rawCol.yzx));
+vec3 c2 = log(exp2((3.141593 * colVec) * rawCol.zxy));
+vec3 c3 = log(exp2((3.141593 * colVec) * rawCol.xyz));
+float phase = fract(lum * 3.0 + time * 0.1);
+vec3 mandelCol = phase < 0.333 ? c1 : phase < 0.666 ? c2 : c3;
+ret_1 = mix(ret_1, mandelCol, 0.5 + 0.5 * q15);
+```
+
+Bright areas, mid-tones, and shadows each get their own iridescent hue, with slow color drift over time.
+
+### Applying a fixed palette with time-based cycling
+
+To apply a specific color palette (e.g. brand colors) to a comp shader, use palette colors **directly as the output color** and drive brightness from pixel luminance. Trying to inject colors through the `log(exp2(...))` formula as multipliers is ineffective — see warning below.
+
+```glsl
+vec3 rawCol = texture(sampler_main, uv).xyz;
+float lum = dot(rawCol, vec3(0.299, 0.587, 0.114));
+
+// Define palette (hex → linear RGB, divide each channel by 255)
+vec3 pal1 = vec3(0.396, 0.012, 0.651); // #6503A6 purple
+vec3 pal2 = vec3(0.039, 0.035, 0.149); // #0A0926 dark navy
+vec3 pal3 = vec3(0.024, 0.451, 0.008); // #067302 green
+vec3 pal4 = vec3(0.651, 0.490, 0.012); // #A67D03 gold
+vec3 pal5 = vec3(0.651, 0.012, 0.012); // #A60303 red
+
+// Time-driven cycling: time is primary, lum adds spatial variation
+float pt = fract(time * 0.12 + lum * 0.4);
+vec3 palColor = mix(pal1, pal2, smoothstep(0.0, 0.2, pt));
+palColor = mix(palColor, pal3, smoothstep(0.2, 0.4, pt));
+palColor = mix(palColor, pal4, smoothstep(0.4, 0.6, pt));
+palColor = mix(palColor, pal5, smoothstep(0.6, 0.8, pt));
+palColor = mix(palColor, pal1, smoothstep(0.8, 1.0, pt));
+
+// Luminance carries structure; palette drives hue
+vec3 mandelCol = palColor * (lum * 2.0 + 0.2);
+```
+
+**Cycle speed:** `time * 0.12` ≈ 8-second full cycle. Increase for faster swapping, decrease for slower drift.
+
+**Making palette colors easily configurable in TypeScript:** define them as string constants and use a template literal for the shader string:
+
+```ts
+const PAL1 = "vec3(0.396, 0.012, 0.651)"; // #6503A6 purple
+const PAL2 = "vec3(0.039, 0.035, 0.149)"; // #0A0926 dark navy
+
+const COMP = `
+  ...
+  vec3 pal1 = ${PAL1};
+  vec3 pal2 = ${PAL2};
+  ...
+`;
+```
+
+To convert a hex color: divide each channel by 255. `#A67D03` → R=166/255=0.651, G=125/255=0.490, B=3/255=0.012 → `vec3(0.651, 0.490, 0.012)`.
+
+#### ⚠️ Why `log(exp2(pi * palette * rawCol))` does NOT give you palette colors
+
+`log(exp2(x)) = x * ln(2)` — the two operations cancel to a linear scale by 0.693. So `log(exp2(pi * palette * rawCol))` is mathematically identical to `2.177 * palette * rawCol`. With small palette values (0.0–1.0), this produces muted, barely distinguishable hues — the output color is always a dimmed version of whatever `rawCol` already was. To actually see a palette color, assign it directly.
+
+#### ⚠️ Watch for white edges injected before your palette code runs
+
+The Mandelverse/organic comp contains this line that adds white to structure edges:
+
+```glsl
+tmpvar_6 = mix(ret_1, vec3(1.0, 1.0, 1.0), vec3(sqrt(dot(x_5, x_5))));
+ret_1 = tmpvar_6;
+```
+
+If your palette code runs **after** this line, those edges stay white regardless of what you do to `mandelCol` later (because the final `mix(ret_1, mandelCol, 0.5)` only partially overwrites them). **Fix:** move your palette variable declarations and `palColor` computation to **before** this line, then replace `vec3(1.0, 1.0, 1.0)` with `palColor * 1.5`.
+
+#### Using a phase-offset palette color for edges
+
+To give edges a different palette color than the fill (for contrast), compute a second palette lookup at `pt + 0.5`:
+
+```glsl
+float pt2 = fract(pt + 0.5);
+vec3 edgePal = mix(pal1, pal2, smoothstep(0.0, 0.2, pt2));
+edgePal = mix(edgePal, pal3, smoothstep(0.2, 0.4, pt2));
+edgePal = mix(edgePal, pal4, smoothstep(0.4, 0.6, pt2));
+edgePal = mix(edgePal, pal5, smoothstep(0.6, 0.8, pt2));
+edgePal = mix(edgePal, pal1, smoothstep(0.8, 1.0, pt2));
+mandelCol = mix(mandelCol, edgePal * 2.0, edgeMask * 0.7);
+```
+
+`pt + 0.5` gives the complementary point in the cycle — purple body → gold/red edges, green body → navy/purple edges.
+
+---
+
+### Edge-highlighted borders in comp
+
+The host's comp already computes gradient vectors (`xlat_mutabledx`, `xlat_mutabledy`) for its edge detection. Reuse these to add colored borders to structures:
+
+```glsl
+// x_3 and x_5 already computed by host's comp (gradient magnitudes)
+float edgeMag = sqrt(dot(x_3, x_3));
+float edgeMask = smoothstep(0.05, 0.6, edgeMag);
+vec3 edgeCol = log(exp2((3.141593 * colVec) * vec3(1.0, 0.0, 0.5)));
+mandelCol = mix(mandelCol, edgeCol, edgeMask * (0.7 + 0.3 * q15));
+```
+
+- **Border thickness**: controlled by two independent levers:
+  1. **Gradient sample distance** — `xlat_mutabled = (texsize.zw * N)` at the top of the comp. Increasing `N` widens the neighborhood used for gradient computation, making all edges thicker. `1.5` = thin, `4.0` = thick, `6.0` = very thick/glowing.
+  2. **`smoothstep` lower bound** — `smoothstep(low, 0.6, edgeMag)`. Lowering `low` (e.g. `0.15` → `0.05`) makes the mask activate at weaker gradients, widening the colored fringe.
+- **Border color**: use a fixed `vec3` permuted through the same channel math for consistent edge coloring, or use `palColor`/`edgePal` from a palette cycle (see above)
+- **Fade control**: `smoothstep(low, high, edgeMag)` — wider range = softer transition
+
+### Removing the outer frame border
+
+Set `ob_size: 0` in `baseVals` to remove the thick white frame around the preset output:
+
+```ts
+baseVals: {
+  ob_size: 0,  // default is often 0.05 — creates a visible border
+  // ...
+}
+```
+
+1. Install **MilkDrop3** (Windows, standalone — no Winamp needed)
+2. Play audio, press `M` to open the preset editor
+3. Edit EEL equations and GLSL shaders live
+4. Press `Ctrl+Enter` to recompile and see changes immediately
+5. Save as `.milk`
+6. Convert to JSON with `milkdrop-preset-converter-node`
+7. Drop JSON into your project
+
+### MilkDrop2077 (preset masher)
+
+A GUI tool for generating presets without writing code:
+
+- Load two `.milk` presets → adjust a blend slider → mash them together
+- Interpolates `baseVals`, mixes waves/shapes, picks shaders from one source
+- Batch-generate hundreds of variants from a folder
+- Good starting point: mash two visually interesting presets, then hand-edit the result
+
+---
+
+## Mixing Presets: Movement from One, Colors from Another
+
+### ⚠️ Critical: use `getPresets()` format, not `presets/converted/` JSON
+
+The butterchurn-presets package ships two different representations of the same presets:
+
+| Location                                                    | Format                                                                       | Compatible with `loadPreset()`?                                                                                                        |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `node_modules/butterchurn-presets/presets/converted/*.json` | Pack’s on-disk JSON for each preset (same shaders the bundle was built from) | **Usually yes** for whole-preset objects — used by this repo in `royal-star-forge.ts` via `import … from '…/presets/converted/….json'` |
+| `require('butterchurn-presets').getPresets()`               | In-memory map of those presets (keys are full titles)                        | **YES**                                                                                                                                |
+
+Some **individual** `warp` / `comp` strings (e.g. hand-copied fragments, or exports from other tools) use declarations **outside** `shader_body {}` in a way butterchurn rejects — the canvas can go **black with no GL error**. That is the failure mode the row above is warning about, not “JSON vs JS” per se.
+
+**When mashing presets:** prefer starting from a full object from **`getPresets()`** or from the matching **`presets/converted/*.json`** file, then `structuredClone` and edit. If you get a black screen, diff your `warp` / `comp` against `getPresets()['exact preset title']`.
+
+**Inspect preset data via Node:**
+
+```js
+const presets = require("butterchurn-presets").getPresets();
+const p = presets["cope + martin - mother-of-pearl"];
+// p.warp, p.comp are the correct compiled strings
+```
+
+**Compiled format** — declarations inside the body (correct):
+
+```glsl
+ shader_body {
+  vec3 noise3_1;   // ← declarations go INSIDE
+  vec3 tmpvar_2;
+  tmpvar_2 = texture(sampler_main, uv).xyz + ...;
+  ret = tmpvar_9.xyz;
+ }
+```
+
+**Raw (broken) format** — declarations outside the body (incorrect):
+
+```glsl
+vec2 xlat_mutabled;    // ← outside shader_body — butterchurn silently renders black
+vec3 xlat_mutabledx;
+ shader_body { ... }
+```
+
+> **Exception:** Some compiled shaders (e.g. Magellan's comp) have a single global `vec2` declaration outside `shader_body`. This is a quirk of that specific compiled output and works fine — the rule is about the general pattern of many declarations outside the body.
+
+### ⚠️ Verify exact preset key names
+
+Preset keys include the full author attribution and can be longer than they appear in UIs. Always check the exact key via Node before hardcoding:
+
+```js
+const presets = require("butterchurn-presets").getPresets();
+Object.keys(presets).filter((k) => k.includes("Magellan"));
+// → ["TonyMilkdrop - Magellan's Nebula [Flexi - you enter first + multiverse]"]
+// NOT "TonyMilkdrop - Magellan's Nebula" — that key doesn't exist and loads nothing
+```
+
+---
+
+### Anatomy of separation
+
+| What you see                            | Where it lives                                                                                             |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Fluid push/pull, swirl, self-similarity | `warp` GLSL shader                                                                                         |
+| Nebula corona shape / radial projection | `comp` GLSL shader (e.g. Magellan's polar mapping)                                                         |
+| Audio-reactive zoom/rotation burst      | `pixel_eqs_str`                                                                                            |
+| Iridescent cross-product rainbow        | `warp` GLSL (when it uses `image.yzx * target.zxy - image.zxy * target.yzx`)                               |
+| Color cycle via comp color injection    | `frame_eqs_str` (e.g. `q10`–`q12`, or any unused `q` slots) + replacing fixed `vec3` colors in `comp` GLSL |
+| Surface shimmer, edge highlights        | `comp` GLSL shader                                                                                         |
+| Trail persistence                       | `baseVals.decay`, `echo_alpha`, `echo_zoom`                                                                |
+
+**Two ways to inject color from a donor:**
+
+1. **Cross-product warp** (mother-of-pearl approach): use the donor's warp shader which does cross-product color math using q10/q11/q12. Gives iridescent rainbow fringes. Replaces the motion warp entirely.
+
+2. **Comp color injection** (`nebula-pearl` approach): keep the motion preset's warp and comp intact, but replace fixed `vec3(r, g, b)` constants in **comp** with `vec3(q10, q11, q12)` fed from the donor's **frame_eqs** (e.g. mother-of-pearl's `wr/wb/wg` pattern). This **only tints** the image the motion warp already built. It does **not** copy mother-of-pearl's **warp-stage** look.
+
+---
+
+### Why `nebula-pearl` can match Magellan yet look nothing like mother-of-pearl
+
+Side‑by‑side, **Magellan** + **mother-of-pearl** + **`nebula-pearl`** often show:
+
+| Panel           | What you’re seeing                                                                                                                                                                                                                                                                                                       |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Magellan        | High-contrast, channel-split **warp** feedback + corona **comp** + Flexi shape — “fiery web” structure is mostly **warp output** before comp tints it.                                                                                                                                                                   |
+| mother-of-pearl | Soft, horizontal **silk** and **iridescent fringes** — the iconic look is largely the **warp** shader: it mixes the image with `vec3(q10,q11,q12)` and adds **cross-product** terms `(rgb × permuted rgb)` so color **depends on local image direction** (pearlescent highlights), gated by **`q3`** (volume) and noise. |
+| `nebula-pearl`  | **Magellan’s warp** + **comp** with **`wr/wb/wg` low-passed into `q10`–`q12`** (`pTint` / `pAlt` in comp — scaled `vec3(q10,q11,q12)` and complementary swap, not MoP’s warp cross-product). Tier (**Y**) adjusts `q1` burst, pixel zoom/rot, wave color wobble, and tint smoothing (`qColA` / `qColB`).                 |
+
+**Bottom line:** “Same colors as mother-of-pearl” in **frame_eqs** ≠ “same visual texture.” The pearl **texture** is mostly **shader math in `warp`**, not the slow RGB triple in `frame_eqs`.
+
+**If you want mother-of-pearl’s actual surface:** you must use **mother-of-pearl’s `warp`** (losing Magellan’s oil/water motion), or **author a new warp** that combines ideas from both (advanced). **MilkDrop2077**-style mashing or hand-merged GLSL is the practical route.
+
+**If you want Magellan’s structure with softer pearl:** keep comp injection but **remove** aggressive neutral `mix(...)` and litmus **multiply** (they fight both sources), **raise saturation** in the comp tint, and accept that **fringes still won’t match** MoP without warp work.
+
+---
+
+### Step-by-step
+
+1. **Get both presets via `getPresets()`** — not from `presets/converted/`. Verify exact key names. Inspect `.warp` and `.comp` strings in Node.
+2. **Decide your color injection strategy:**
+   - If the color donor's warp does cross-product color math → use that warp, lose the motion warp's shape
+   - If you want to preserve the motion preset's shape → keep its warp+comp, inject color by replacing fixed `vec3` constants in the comp with uniforms such as `vec3(q10, q11, q12)` **only on registers the motion preset’s `frame_eqs_str` does not already use** (see `royal-star-forge`: `q14`–`q16` instead of `q10`–`q12`)
+3. **Add audio reactivity via `pixel_eqs_str`** from the motion donor — this is independent of the warp/comp shaders and can always be stacked.
+4. **Merge `frame_eqs_str`**: motion block (q1, mv_x/y, zoom, rot) from one preset + color cycle (wr/wb/wg → q10/q11/q12) from the other. Concatenate; audit q-register collisions.
+5. **Watch comp brightness calibration** — a comp with `* 12.0` multiplier is calibrated for dark images. Applied to a bright turbulent warp, it overexposes. Use the motion donor's comp if the color donor's comp blows out.
+6. **Use the motion donor's `baseVals`** for structural character (echo\_\*, darken, wave_mode, decay).
+7. **Set `wave_a: 0`** if `wave_mode` draws a visible waveform line you don't want.
+8. **Audit q-register collisions** — list every q slot used, rename if they overlap.
+
+---
+
+### Worked example: `nebula-pearl` (current: v12 in repo — see file header)
+
+**File:** `src/presets/nebula-pearl.ts`  
+**Goal (achievable):** Magellan’s nebula **structure** (warp + corona comp + Flexi shape + pixel_eqs punch), with **slow global tint** driven by phase-staggered `wr/wb/wg` smoothed into `q10`–`q12`.  
+**Goal (not achieved by this strategy alone):** mother-of-pearl’s **smooth iridescent surface** — that requires MoP’s **warp** (see table above).
+
+**Strategy used:** comp color injection — `pTint` / `pAlt` in comp use scaled `vec3(q10,q11,q12)` and `vec3(q12,q11,q10)`; `frame_eqs_str` runs dual **sines** on `wr/wb/wg`, then **`a.q10 = qColA*q10 + qColB*wr`** (and same for `q11`/`q12`), plus audio wobble on `wave_r` / `wave_g` / `wave_b`. **Cannot** reproduce MoP’s **cross-product warp** fringes without swapping warp.
+
+#### What each donor contributed
+
+**From Magellan's Nebula — warp + comp + motion equations (structure)**
+
+Magellan's warp uses blur2 gradient vectors to displace R, G, B channels independently — this creates the oil/water fluid motion:
+
+```glsl
+// Simplified: compute gradient from blur2, use as displacement per channel
+vec2 disp = gradient * 0.01;
+ret_2.x = texture(sampler_fw_main, uv - disp).x;  // R offset one way
+ret_2.y = texture(sampler_fw_main, uv + disp_perp).y;  // G offset another
+// B is implicit from ret_2.z
+```
+
+Magellan's comp applies a polar coordinate projection creating the dark-center nebula corona shape, then colors it with fixed constants:
+
+```glsl
+// Original: fixed blue-white and brown
+ret_6 = brightness * vec3(0.3, 0.5, 0.7);           // blue-white nebula
+mix(ret_6, vec3(0.2, 0.1, 0.0), inner_mask);         // brown inner region
+```
+
+The `pixel_eqs_str` adds audio-reactive zoom + rotation bursts on beats:
+
+```js
+a.zoom += 0.0125 * a.q1;
+a.rot += 0.025 * Math.sin(10 * a.fps) * a.q1;
+```
+
+**From mother-of-pearl — color _idea_ (`wr` / `wb` / `wg` pattern, not a verbatim MoP preset)**
+
+`nebula-pearl` uses the same _style_ of slow RGB phases (staggered sines on `a.wr` / `a.wb` / `a.wg`), then feeds comp uniforms through a **low-pass** (tier-tuned `qColA` / `qColB`), not a direct `q10 = wr` assignment:
+
+```js
+a.wr = 0.5 + 0.42 * (0.6 * Math.sin(1.1 * a.time) + 0.4 * Math.sin(0.8 * a.time));
+a.wb = 0.5 + 0.42 * (0.6 * Math.sin(1.6 * a.time) + 0.4 * Math.sin(0.5 * a.time));
+a.wg = 0.5 + 0.42 * (0.6 * Math.sin(1.34 * a.time) + 0.4 * Math.sin(0.4 * a.time));
+a.q10 = qColA * a.q10 + qColB * a.wr; // + same pattern for q11, q12; then clamp boost
+```
+
+**The injection:** Magellan’s comp was rewritten to use **`pTint` / `pAlt`** — scaled, clamped `vec3(q10,q11,q12)` and `vec3(q12,q11,q10)` multiplied into the corona brightness path (see `COMP` in `nebula-pearl.ts`), instead of fixed RGB constants.
+
+The corona **tint** cycles slowly while **motion** stays Magellan-like. **Do not expect** the middle panel of a three-way compare to match — that is **warp-level** appearance.
+
+#### Gotchas encountered
+
+| Problem                                     | Cause                                                                                                                                                          | Fix                                                             |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Black screen, no shader errors              | Shaders copied from `presets/converted/` JSON (wrong format)                                                                                                   | Use `getPresets()` via Node                                     |
+| Panel in debug view showing nothing (black) | Preset key string was wrong — partial name that doesn't exist                                                                                                  | Verify exact key via `Object.keys(presets).filter(...)` in Node |
+| White overexposure                          | Used mother-of-pearl's comp (×12 multiplier) on Magellan's bright warp output                                                                                  | Use Magellan's own comp instead; inject color there             |
+| Horizontal line through middle              | `wave_mode: 6` + `wave_a > 0` draws an audio waveform bar                                                                                                      | Set `wave_a: 0`                                                 |
+| v1 nebula-pearl had wrong shape             | Used mother-of-pearl's warp (smooth silk push) instead of Magellan's (gradient oil/water)                                                                      | Use Magellan's warp; inject color in comp instead               |
+| Looks like B&W / thin web vs MoP            | Neutral `mix` toward gray in comp + litmus **multiply toward white** killed saturation (fixed in v4); remaining gap vs MoP is still **warp**-stage iridescence | See “Why nebula-pearl…” above                                   |
+
+#### Q-register map
+
+| Slot                  | Source                                   | Purpose                                              |
+| --------------------- | ---------------------------------------- | ---------------------------------------------------- |
+| `q1`                  | nebula `frame_eqs` (via `q15` smoothing) | Audio energy burst → Flexi `rad`, pixel_eqs zoom/rot |
+| `q15`                 | nebula `frame_eqs`                       | Low-pass of `q1` for stabler motion read             |
+| `q10` / `q11` / `q12` | nebula `frame_eqs`                       | `wr` / `wb` / `wg` → comp `pTint` / `pAlt`           |
+
+---
+
+### Worked example: `royal-star-forge`
+
+**File:** `src/presets/royal-star-forge.ts`  
+**Donors:** `Fumbling_Foo & Flexi, Martin, Orb - Star Forge v16` (motion / beat / warp / comp shell) + `$$$ Royal - Mashup (220)` (palette: `baseVals` overlay, three spectrum waves copied into wave slots 1–3).  
+**Why not `q10`–`q12` for tint?** Star Forge’s own `frame_eqs_str` already uses **`q11`–`q13`** for internal logic, so tint is applied with **`q14`–`q16`** in comp and the same `wr` / `wb` / `wg` low-pass pattern as `nebula-pearl`, appended after Star Forge’s frame equations. **Always audit q collisions** when appending `frame_eqs_str`.
+
+---
+
+## Quick Reference
+
+### Butterchurn `_str` equation cheat sheet
+
+```js
+// Audio (frame_eqs_str)
+a.q1 = a.bass;
+a.q2 = a.mid;
+a.q3 = a.treb;
+a.q4 = a.bass_att;
+a.q5 = a.mid_att;
+a.q6 = a.treb_att;
+
+// Beat detect
+a.beat = above(a.bass, a.bass_att * 1.3) && !above(a.cd, 0) ? 1 : 0;
+a.cd = Math.max(0, a.cd - 1) + a.beat * 20;
+a.q7 = a.beat ? 1.0 : a.q7 * 0.85;
+
+// Motion
+a.zoom = 1.0 + a.bass * 0.02;
+a.rot = a.rot + a.mid * 0.005;
+a.decay = 0.97 + a.vol_att * 0.02;
+
+// Color cycle
+a.phase = a.phase + 0.01;
+a.q10 = Math.sin(a.phase);
+a.q11 = Math.sin(a.phase + 2.094);
+a.q12 = Math.sin(a.phase + 4.189);
+```
+
+### GLSL uniform cheat sheet
+
+```glsl
+uniform float time, fps, frame;
+uniform float bass, mid, treb, bass_att, mid_att, treb_att;
+uniform float q1 /* .. */ q32;
+uniform float zoom, rot, warp, decay;
+uniform vec2  resolution;
+uniform sampler2D sampler_main, sampler_blur1, sampler_blur2, sampler_blur3;
+uniform sampler2D sampler_noise_lq, sampler_noise_hq;
+varying vec2 uv, uv_orig;
+```
