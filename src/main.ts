@@ -119,8 +119,11 @@ async function start() {
 
   const rig = await createAudioAnalyserRig({
     logPrefix: "[audio]",
-    onInputKindChange: (kind) => {
-      audioInputLabel.textContent = formatAudioInputLabel(kind, "main");
+    onInputKindChange: (kind, filename) => {
+      audioInputLabel.textContent =
+        kind === "file" && filename
+          ? `Audio: ${filename} (A = mic)`
+          : formatAudioInputLabel(kind, "main");
     },
   });
 
@@ -263,7 +266,7 @@ async function start() {
       },
       {
         label: "Audio in",
-        value: rig.getInputKind() === "mic" ? "microphone" : "computer capture",
+        value: rig.getInputKind() === "mic" ? "microphone" : "audio file",
       },
       { label: "Ghost", value: ghostMode ? "on" : "off" },
       { label: "Freeze", value: freezeMode ? "on" : "off" },
