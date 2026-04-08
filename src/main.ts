@@ -11,6 +11,7 @@ import { buildRows, createOptionsSummaryHud } from "./options-summary-hud";
 import {
   applyGhostFreeze,
   clonePresetGraphForButterchurn,
+  type PresetWithBase,
 } from "./preset-variants";
 import {
   CUSTOM_PRESET_REGISTRY,
@@ -153,15 +154,15 @@ async function start() {
   resize();
 
   let vizIntensity: VizIntensity = "normal";
-  const presets: Record<string, object> = {
+  const allPresets: Record<string, PresetWithBase> = {
     ...butterchurnPresets.getPresets(),
     [MANDELVERSE_PACK_PRESET_KEY]: mandelversePackPreset,
   };
   for (const e of CUSTOM_PRESET_REGISTRY) {
-    presets[e.mapKeySorted] = {} as object;
+    allPresets[e.mapKeySorted] = {} as PresetWithBase;
   }
-  rebuildAllCustomSlots(presets, vizIntensity);
-  const presetKeys = Object.keys(presets).sort();
+  rebuildAllCustomSlots(allPresets, vizIntensity);
+  const presetKeys = Object.keys(allPresets).sort();
   let idx = 0;
   let ghostMode = false;
   let freezeMode = false;
@@ -182,9 +183,9 @@ async function start() {
   function loadPreset(blendTime: number) {
     const key = presetKeys[idx];
     const entry = getCustomPresetEntry(key);
-    if (entry) presets[key] = entry.build(vizIntensity);
+    if (entry) allPresets[key] = entry.build(vizIntensity);
     syncAnalyserGainForCurrentPreset();
-    const preset = presets[key] as { baseVals: Record<string, number> };
+    const preset = allPresets[key];
     const p = clonePresetGraphForButterchurn(
       applyGhostFreeze(preset, ghostMode, freezeMode),
     );
@@ -322,7 +323,7 @@ async function start() {
     if (e.key === "y" || e.key === "Y") {
       e.preventDefault();
       vizIntensity = nextVizIntensity(vizIntensity);
-      rebuildAllCustomSlots(presets, vizIntensity);
+      rebuildAllCustomSlots(allPresets, vizIntensity);
       syncAnalyserGainForCurrentPreset();
       console.log("[butterchurn] viz intensity:", vizIntensity);
       if (visualizer && getCustomPresetEntry(presetKeys[idx])) {

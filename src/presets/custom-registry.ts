@@ -3,6 +3,7 @@
  * `build(tier)` — the shared analyser GainNode stays at unity (1×) while they run.
  * Stock butterchurn-presets use `VIZ_AUDIO_GAIN[tier]` on the GainNode instead.
  */
+import type { PresetWithBase } from "../preset-variants";
 import type { VizIntensity } from "../viz-intensity";
 import { createLinesPreset, LINES_PRESET_CANONICAL_ID, LINES_PRESET_KEY_SORTED } from "./lines";
 import {
@@ -37,7 +38,7 @@ export type CustomPresetDefinition = {
   canonicalId: string;
   /** Key in `presets` / `main.ts` (usually leading spaces for sort order). */
   mapKeySorted: string;
-  build: (tier: VizIntensity) => object;
+  build: (tier: VizIntensity) => PresetWithBase;
   /**
    * Stock `getPresets()` keys shown left → right before the custom preset in
    * `debug.html`. Missing keys (e.g. motion donor not shipped in minimal pack) are skipped with a console warning.
@@ -99,7 +100,7 @@ export function getCustomPresetEntry(mapKey: string): CustomPresetDefinition | n
   return CUSTOM_PRESET_REGISTRY.find((e) => e.canonicalId === id) ?? null;
 }
 
-export function rebuildAllCustomSlots(presets: Record<string, object>, tier: VizIntensity): void {
+export function rebuildAllCustomSlots(presets: Record<string, PresetWithBase>, tier: VizIntensity): void {
   for (const k of Object.keys(presets)) {
     const e = getCustomPresetEntry(k);
     if (e) presets[k] = e.build(tier);

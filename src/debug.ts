@@ -7,6 +7,7 @@ import { buildRows, createOptionsSummaryHud } from "./options-summary-hud";
 import {
   applyGhostFreeze,
   clonePresetGraphForButterchurn,
+  type PresetWithBase,
 } from "./preset-variants";
 import {
   CUSTOM_PRESET_REGISTRY,
@@ -25,12 +26,12 @@ import {
 import { butterchurnQualityOpts, displayPixelRatio } from "./viz-quality";
 
 let vizIntensity: VizIntensity = "normal";
-const allPresets: Record<string, object> = {
+const allPresets: Record<string, PresetWithBase> = {
   ...butterchurnPresets.getPresets(),
   [MANDELVERSE_PACK_PRESET_KEY]: mandelversePackPreset,
 };
 for (const e of CUSTOM_PRESET_REGISTRY) {
-  allPresets[e.mapKeySorted] = {} as object;
+  allPresets[e.mapKeySorted] = {} as PresetWithBase;
 }
 rebuildAllCustomSlots(allPresets, vizIntensity);
 
@@ -38,7 +39,7 @@ rebuildAllCustomSlots(allPresets, vizIntensity);
   Object.keys(allPresets).sort();
 
 /** One row per custom preset: optional stock bases + custom `mapKeySorted` (see `CUSTOM_PRESET_REGISTRY`). */
-function buildDebugPresetScenes(presets: Record<string, object>): string[][] {
+function buildDebugPresetScenes(presets: Record<string, PresetWithBase>): string[][] {
   return CUSTOM_PRESET_REGISTRY.map((e) => {
     const bases = (e.debugBasePresetKeys ?? []).filter((k) => {
       if (k in presets) return true;
@@ -226,9 +227,7 @@ async function start() {
       const key = keys[i]!;
       const entry = getCustomPresetEntry(key);
       if (entry) allPresets[key] = entry.build(vizIntensity);
-      const preset = allPresets[key] as {
-        baseVals: Record<string, number>;
-      };
+      const preset = allPresets[key];
       handle.visualizer.loadPreset(
         clonePresetGraphForButterchurn(
           applyGhostFreeze(preset, ghostMode, freezeMode),
@@ -280,11 +279,7 @@ async function start() {
         }
         this.visualizer.loadPreset(
           clonePresetGraphForButterchurn(
-            applyGhostFreeze(
-              preset as { baseVals: Record<string, number> },
-              ghostMode,
-              freezeMode,
-            ),
+            applyGhostFreeze(preset, ghostMode, freezeMode),
           ),
           blendTime,
         );

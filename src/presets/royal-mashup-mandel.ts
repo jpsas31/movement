@@ -1,17 +1,23 @@
+import type { PresetWithBase } from "../preset-variants";
 import type { VizIntensity } from "../viz-intensity";
 import mandelverseJson from "./json/Fumbling_Foo + En D & Martin - Mandelverse.butterchurn.json";
 import royalJson from "butterchurn-presets/presets/converted/$$$ Royal - Mashup (220).json";
+import { clonePresetData } from "./utils";
 
-/**
- * royal-mashup-mandel
- *
- * Motion: from Mandelverse (warp, init, frame, pixel).
- * Colors: from Royal Mashup (220) palette (bright, minimal black).
- * Differences from royal-star-forge:
- *  - Disables all shapes to remove the thick border.
- *  - Brighter tint: higher clamp and higher initial q9/q17/q29.
- *  - Stronger audio-reactive color boost (tier amplitudes increased).
- */
+// royal-mashup-mandel — Mandelverse motion + Royal Mashup (220) colors, no shapes.
+//
+// Visual: same fractal tunnel as royal-star-forge but with shapes disabled and a
+// brighter comp tint (clamp 2.0 vs 1.22, higher initial q registers). Results in
+// more saturated colors and less black in the output.
+//
+// Differences from royal-star-forge:
+//  - All shapes disabled (no thick border overlay).
+//  - black floor lift (max 0.03) before tinting to reduce dark areas.
+//  - Higher tint clamp (2.0) and stronger initial color registers (q=0.85).
+//  - Stronger audio-reactive color boost (tier amplitudes increased).
+//
+// Lineage: Mandelverse warp/comp/frame + Royal Mashup (220) waves + custom frame equations.
+// Intensity (Y): wave color pulse depth and color register smoothing scale via TIERS.
 
 export const ROYAL_MASHUP_MANDEL_PRESET_KEY_SORTED = "  royal-mashup-mandel";
 export const ROYAL_MASHUP_MANDEL_PRESET_KEY = "royal-mashup-mandel";
@@ -38,10 +44,6 @@ type PresetShape = {
   comp: string;
 };
 
-function clonePresetData<T>(data: T): T {
-  return JSON.parse(JSON.stringify(data)) as T;
-}
-
 /** Mandelverse comp ends with this; we multiply ret by a brighter tint. */
 const MANDELVERSE_COMP_RET_ANCHOR = "ret = tmpvar_32.xyz;\n }";
 
@@ -66,10 +68,15 @@ const ROYAL_COLOR_BASE_OVERLAY: Record<string, number> = {
 };
 
 type Tier = {
+  /** Bass channel pulse depth on the wave overlay (red). */
   waveR: number;
+  /** Bass channel pulse depth on the wave overlay (blue). */
   waveB: number;
+  /** Mid channel pulse depth on the wave overlay (green). */
   waveG: number;
+  /** Decay weight for color registers q9/q17/q29 — higher = slower color shift. */
   qColA: number;
+  /** Fresh-value weight for color registers — higher = faster color response. */
   qColB: number;
 };
 
@@ -97,7 +104,7 @@ const TIERS: Record<VizIntensity, Tier> = {
   },
 };
 
-export function createRoyalMashupMandel(aggression: VizIntensity): object {
+export function createRoyalMashupMandel(aggression: VizIntensity): PresetWithBase {
   const p = clonePresetData(mandelverseJson) as unknown as PresetShape;
   const royal = clonePresetData(royalJson) as unknown as PresetShape;
   const t = TIERS[aggression];
@@ -138,15 +145,30 @@ export function createRoyalMashupMandel(aggression: VizIntensity): object {
   const qca = t.qColA.toFixed(2);
   const qcb = t.qColB.toFixed(2);
 
-  // Frame: audio-reactive modulation of colors; start brighter and boost more.
-  p.frame_eqs_str +=
-    "a.vol=.25*(a.bass+a.mid+a.treb);a.vol*=a.vol;" +
-    `a.wave_r+=${wr}*Math.sin(42*a.vol);a.wave_b+=${wb}*Math.sin(17*a.vol);a.wave_g+=${wg}*Math.sin(30*a.vol);` +
-    "a.wr=.5+.42*(.6*Math.sin(1.1*a.time)+.4*Math.sin(.8*a.time));" +
-    "a.wb=.5+.42*(.6*Math.sin(1.6*a.time)+.4*Math.sin(.5*a.time));" +
-    "a.wg=.5+.42*(.6*Math.sin(1.34*a.time)+.4*Math.sin(.4*a.time));" +
-    `a.q9=${qca}*a.q9+${qcb}*a.wr;a.q17=${qca}*a.q17+${qcb}*a.wb;a.q29=${qca}*a.q29+${qcb}*a.wg;` +
-    "a.q9=Math.min(1.5,a.q9*1.12+0.05);a.q17=Math.min(1.5,a.q17*1.12+0.05);a.q29=Math.min(1.5,a.q29*1.12+0.05);";
+  // Volume: combined RMS drives wave overlay color pulses on transients.
+  const VOLUME_EQS = [
+    "a.vol=.25*(a.bass+a.mid+a.treb);a.vol*=a.vol;",
+    `a.wave_r+=${wr}*Math.sin(42*a.vol);`,
+    `a.wave_b+=${wb}*Math.sin(17*a.vol);`,
+    `a.wave_g+=${wg}*Math.sin(30*a.vol);`,
+  ].join("");
+
+  // Color oscillators: slow-drifting RGB channels (wr/wb/wg) feed q9/q17/q29,
+  // which the injected comp tint uses to drive the audio-reactive color bloom.
+  // Clamp is 1.5 (vs 1.0 in star-forge) for brighter sustained output.
+  const COLOR_OSCILLATOR_EQS = [
+    "a.wr=.5+.42*(.6*Math.sin(1.1*a.time)+.4*Math.sin(.8*a.time));",
+    "a.wb=.5+.42*(.6*Math.sin(1.6*a.time)+.4*Math.sin(.5*a.time));",
+    "a.wg=.5+.42*(.6*Math.sin(1.34*a.time)+.4*Math.sin(.4*a.time));",
+    `a.q9=${qca}*a.q9+${qcb}*a.wr;`,
+    `a.q17=${qca}*a.q17+${qcb}*a.wb;`,
+    `a.q29=${qca}*a.q29+${qcb}*a.wg;`,
+    "a.q9=Math.min(1.5,a.q9*1.12+0.05);",
+    "a.q17=Math.min(1.5,a.q17*1.12+0.05);",
+    "a.q29=Math.min(1.5,a.q29*1.12+0.05);",
+  ].join("");
+
+  p.frame_eqs_str += VOLUME_EQS + COLOR_OSCILLATOR_EQS;
 
   // Init: higher starting color registers so early frames are already bright.
   p.init_eqs_str += ";a.q9=0.85;a.q17=0.85;a.q29=0.85;a.wr=0.5;a.wb=0.5;a.wg=0.5;";

@@ -30,7 +30,7 @@ declare module 'butterchurn' {
 
 declare module 'butterchurn-presets' {
   const butterchurnPresets: {
-    getPresets(): Record<string, object>;
+    getPresets(): Record<string, { baseVals: Record<string, number> }>;
   };
   export default butterchurnPresets;
 }

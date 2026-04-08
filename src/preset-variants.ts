@@ -1,4 +1,4 @@
-export type PresetWithBase = { baseVals: Record<string, number> };
+export type PresetWithBase = { baseVals: Record<string, number>; [key: string]: unknown };
 
 /**
  * Butterchurn `loadPreset` mutates nested `shapes` / `waves` (adds `Function`s). Without a

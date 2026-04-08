@@ -1,8 +1,15 @@
-// Custom preset: drifting horizontal lines, thickness and position driven by audio.
-// Butterchurn equations use JavaScript syntax with an "a." namespace prefix.
+// lines — four drifting sine-wave lines, each driven by a different audio band.
 //
-// Intensity (Y): adjust `createLinesPreset` / LINES_TIER_* to taste; register in custom-registry.ts.
+// Visual: four horizontal sinusoidal lines drift up and down independently.
+// Each line is assigned a frequency band (bass / mid / treble / bass_att) that
+// controls its vertical position drift speed, undulation amplitude, and color/alpha
+// intensity. On loud transients the lines flare brightly; at silence they dim to
+// near-invisible. No warp or comp shaders — purely wave-based.
+//
+// Intensity (Y): scales all audio coupling coefficients uniformly via LINES_AUDIO_COUPLE.
+// To retune a single band, edit the relevant wave's frame_eqs_str directly.
 
+import type { PresetWithBase } from "../preset-variants";
 import type { VizIntensity } from "../viz-intensity";
 
 export const LINES_PRESET_CANONICAL_ID = "lines";
@@ -104,7 +111,7 @@ const LINES_AUDIO_COUPLE: Record<VizIntensity, number> = {
   hot: 1.38,
 };
 
-export function createLinesPreset(tier: VizIntensity): object {
+export function createLinesPreset(tier: VizIntensity): PresetWithBase {
   const m = LINES_AUDIO_COUPLE[tier];
   if (m === 1) return { ...linesPreset, waves: [...linesPreset.waves] };
 
