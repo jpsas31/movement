@@ -2,7 +2,7 @@
   "name": "movement",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"vite\" \"uv run uvicorn main:app --host 0.0.0.0 --port 8080 --reload\"",
+    "dev": "concurrently \"vite\" \"uv run uvicorn backend.main:app --host 0.0.0.0 --port 8080 --reload\"",
     "build": "vite build",
     "build:mandelverse": "node scripts/build-mandelverse-butterchurn.mjs",
     "lint": "eslint src --ext .ts",

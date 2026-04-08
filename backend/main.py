@@ -15,7 +15,7 @@ except Exception:
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 app = FastAPI()
 
@@ -48,10 +48,10 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     ssl_cert = os.getenv("SSL_CERT")
     ssl_key = os.getenv("SSL_KEY")
-    # Same as: uv run uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+    # Same as: uv run uvicorn backend.main:app --host 0.0.0.0 --port 8080 --reload
     # Use import string so reload works. HTTPS: pass ssl_keyfile/ssl_certfile (see generate_cert).
     uvicorn.run(
-        "main:app",
+        "backend.main:app",
         host=host,
         port=port,
         reload=True,
