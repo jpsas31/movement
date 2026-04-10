@@ -62,11 +62,101 @@ Local presets live under `src/presets/` and are registered in **`src/presets/cus
 
 **Shipped custom presets**
 
-| File                  | Map key (trimmed)  | Role                                                                                                                                              |
-| --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nebula-pearl.ts`     | `nebula-pearl`     | Magellan-class warp + comp + shape; audio-tinted comp via `q10`–`q12`                                                                             |
-| `royal-star-forge.ts` | `royal-star-forge` | Star Forge v16 motion + Royal Mashup (220) palette / waves; comp tint via `q14`–`q16` (avoids Star Forge’s use of `q11`–`q13` in `frame_eqs_str`) |
-| `lines.ts`            | `lines`            | Minimal line waves                                                                                                                                |
+| File                            | Map key (trimmed)          | Visual description                                                                                       |
+| ------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `nebula-pearl.ts`               | `nebula-pearl`             | Pulsing circle with Magellan warp trails; RGB color bloom via `q10`–`q12`                                |
+| `royal-star-forge.ts`           | `royal-star-forge`         | Mandelverse fractal tunnel + Royal wave display; tint injected into comp via `q9`/`q17`/`q29`            |
+| `royal-mashup-mandel.ts`        | `royal-mashup-mandel`      | Same as star-forge but no shapes, brighter (clamp 2.0), black floor lifted at 0.03                       |
+| `royal-mashup-mandel-bright.ts` | `royal-mashup-mandel-bright` | Even brighter variant: clamp 2.5, floor 0.06, initial registers at 0.9                                 |
+| `organic-mandel.ts`             | `organic-mandel`           | Autonomous 3D Mandelbox fly-through with cyclic palette comp (no audio intensity scaling yet)            |
+| `lines.ts`                      | `lines`                    | Four drifting sine-wave lines, each driven by bass / mid / treble / bass_att                             |
+
+---
+
+## Writing readable custom presets
+
+### File header
+
+Start every preset file with a comment block that covers:
+
+1. **Visual description** — what does it look like and feel like?
+2. **Lineage** — which stock presets or sources did the warp/comp come from?
+3. **Intensity note** — how does the `tier` parameter change the behavior?
+
+```ts
+// my-preset — brief visual description.
+//
+// Visual: what the viewer sees and how audio affects it.
+//
+// Lineage: where warp/comp/init/frame came from.
+// Intensity (Y): what changes between mild / normal / hot.
+```
+
+### Tier type JSDoc
+
+Document each field in your `Tier` type so future editors know the visual effect without running the preset:
+
+```ts
+type Tier = {
+  /** Multiplier on the bass power expression — higher = more reactive to audio hits. */
+  q1Scale: number;
+  /** Decay weight for color registers — higher = slower color shift. */
+  qColA: number;
+  // ...
+};
+```
+
+### Equation section constants
+
+Split `frame_eqs_str` (and similar equation strings) into named section constants joined at build time. Group lines by what they *do*, not by what variable they touch:
+
+```ts
+// Audio reactivity: bass/treb/mid → q1 (main energy register); q15 smooths it.
+const AUDIO_REACTIVITY_EQS = [
+  `a.q1=${q1s}*pow(1+1.02*a.bass+...,${pe});`,
+  `a.q15=${q15a}*a.q15+${q15b}*a.q1;a.q1=a.q15;`,
+].join("");
+
+// Motion: motion vector magnitude and position driven by q1.
+const MOTION_EQS = [
+  `a.mv_a=a.q1*${mv};`,
+  "a.mv_x+=Math.sin(a.time);",
+  // ...
+].join("");
+
+// Color oscillators: slow-drifting RGB channels feed the comp tint registers.
+const COLOR_OSCILLATOR_EQS = [
+  "a.wr=.5+.42*(.6*Math.sin(1.1*a.time)+.4*Math.sin(.8*a.time));",
+  // ...
+].join("");
+
+const frame_eqs_str = AUDIO_REACTIVITY_EQS + MOTION_EQS + COLOR_OSCILLATOR_EQS;
+```
+
+Common section names used in this repo:
+
+| Constant name          | What it covers                                              |
+| ---------------------- | ----------------------------------------------------------- |
+| `AUDIO_REACTIVITY_EQS` | Deriving the main energy register(s) from bass/mid/treb     |
+| `MOTION_EQS`           | Motion vector magnitude, position, direction                |
+| `VOLUME_EQS`           | RMS-based wave overlay color pulses                         |
+| `COLOR_OSCILLATOR_EQS` | Slow-drifting RGB oscillators feeding comp tint registers   |
+
+### Warp / comp shader annotations
+
+Warp and comp shaders are compiled GLSL — the source is not readable. Add a one-liner above each describing what it does visually:
+
+```ts
+// Warp shader (compiled from Magellan’s Nebula source):
+// Samples blur buffers to build a gradient field and displaces UV along it —
+// creates flowing nebula distortion trails.
+const WARP = "...compiled GLSL...";
+
+// Comp shader (compiled from Mother-of-Pearl source):
+// Reads edge structure, applies inverse-square tinting, multiplies by
+// color registers q10/q11/q12 for the audio-reactive color bloom.
+const COMP = "...compiled GLSL...";
+```
 
 ---
 

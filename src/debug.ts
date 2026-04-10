@@ -143,6 +143,7 @@ async function start() {
   }
 
   function updateVisibility() {
+    const moldVisible = combinedMode || mode === "mold";
     if (combinedMode) {
       gridEl.style.display = "flex";
       moldContainer.style.display = "block";
@@ -156,6 +157,7 @@ async function start() {
       moldContainer.style.pointerEvents = "";
       if (mode === "mold" && !moldInstance) initMold();
     }
+    if (moldInstance) moldVisible ? moldInstance.loop() : moldInstance.noLoop();
   }
 
   function switchMode() {
