@@ -34,9 +34,7 @@ function pickAudioFile(): Promise<File> {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "audio/*,video/*";
-    input.addEventListener("cancel", () =>
-      reject(new DOMException("Cancelled", "AbortError")),
-    );
+    input.addEventListener("cancel", () => reject(new DOMException("Cancelled", "AbortError")));
     input.onchange = () => {
       const file = input.files?.[0];
       if (file) resolve(file);
@@ -46,16 +44,11 @@ function pickAudioFile(): Promise<File> {
   });
 }
 
-export function formatAudioInputLabel(
-  kind: AudioInputKind,
-  variant: "main" | "compact",
-): string {
+export function formatAudioInputLabel(kind: AudioInputKind, variant: "main" | "compact"): string {
   if (variant === "compact") {
     return kind === "mic" ? "Audio: mic (A = file)" : "Audio: file (A = mic)";
   }
-  return kind === "mic"
-    ? "Audio: microphone (A = file)"
-    : "Audio: file (A = mic)";
+  return kind === "mic" ? "Audio: microphone (A = file)" : "Audio: file (A = mic)";
 }
 
 export type AudioAnalyserRig = {
@@ -82,6 +75,7 @@ export async function createAudioAnalyserRig(options?: {
   let inputKind: AudioInputKind = "mic";
   let currentSource: AudioNode;
   let currentCleanup: () => void;
+  let currentWsAudioWorklet: AudioWorkletNode | null = null;
   let destinationConnected = false;
 
   const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -108,6 +102,10 @@ export async function createAudioAnalyserRig(options?: {
       let newSource: AudioNode;
       let newCleanup: () => void;
       let filename: string | undefined;
+      await audioCtx.audioWorklet.addModule(new URL("audio-processor.ts", import.meta.url));
+      currentWsAudioWorklet?.disconnect();
+      currentWsAudioWorklet = new AudioWorkletNode(audioCtx, "ws-audio-processor");
+      currentWsAudioWorklet.connect(analyser);
 
       if (next === "mic") {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -122,14 +120,19 @@ export async function createAudioAnalyserRig(options?: {
         const file = await pickAudioFile();
         filename = file.name;
         const url = URL.createObjectURL(file);
-        const audioEl = new Audio(url);
-        audioEl.loop = true;
-        await audioEl.play();
-        newSource = audioCtx.createMediaElementSource(audioEl);
-        newCleanup = () => {
-          audioEl.pause();
+        try {
+          const audioEl = new Audio(url);
+          audioEl.loop = true;
+          await audioEl.play();
+          newSource = audioCtx.createMediaElementSource(audioEl);
+          newCleanup = () => {
+            audioEl.pause();
+            URL.revokeObjectURL(url);
+          };
+        } catch (err) {
           URL.revokeObjectURL(url);
-        };
+          throw err;
+        }
         // Route file audio to speakers so the user can hear it
         if (!destinationConnected) {
           inputGain.connect(audioCtx.destination);

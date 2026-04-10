@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -34,13 +34,35 @@ def read_debug():
     return FileResponse(BASE_DIR / "static" / "debug.html")
 
 
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    while True:
+        data = await websocket.receive_text()
+        print(data)
+
+
 def generate_cert(cert_file="cert.pem", key_file="key.pem"):
-    subprocess.run([
-        "openssl", "req", "-x509", "-newkey", "rsa:2048",
-        "-keyout", key_file, "-out", cert_file,
-        "-days", "365", "-nodes",
-        "-subj", "/CN=localhost"
-    ], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            key_file,
+            "-out",
+            cert_file,
+            "-days",
+            "365",
+            "-nodes",
+            "-subj",
+            "/CN=localhost",
+        ],
+        check=True,
+        capture_output=True,
+    )
 
 
 if __name__ == "__main__":
