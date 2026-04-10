@@ -1,4 +1,5 @@
 import butterchurn from "butterchurn";
+import { VideoFrameInjector } from "./video-frame-injector";
 import butterchurnPresets from "butterchurn-presets";
 import { createAudioAnalyserRig, formatAudioInputLabel } from "./audio-input";
 import {
@@ -33,6 +34,8 @@ import { butterchurnQualityOpts, displayPixelRatio } from "./viz-quality";
 const BUTTERCHURN_CANVAS_ID = "movement-butterchurn-canvas";
 
 let lowRes = false;
+
+
 
 function syncButterchurnCanvasSize() {
   const w = window.innerWidth;
@@ -117,6 +120,9 @@ const CYCLE_INTERVAL_MS = 20_000;
 
 async function start() {
   overlay.remove();
+  
+ 
+
 
   const rig = await createAudioAnalyserRig({
     logPrefix: "[audio]",
@@ -202,11 +208,13 @@ async function start() {
   loadPreset(0);
 
   let autoCycle = false;
-  setInterval(() => {
+  const _cycleInterval = setInterval(() => {
     if (!autoCycle || (mode !== "butterchurn" && !combinedMode)) return;
     idx = (idx + 1) % presetKeys.length;
     loadPreset(2.0);
   }, CYCLE_INTERVAL_MS);
+
+  const videoInjector = new VideoFrameInjector();
 
   let moldInstance: ReturnType<typeof createMoldSketch> | null = null;
 
@@ -224,6 +232,7 @@ async function start() {
   let combinedMode = false;
 
   function updateVisibility() {
+    const moldVisible = combinedMode || mode === "mold";
     if (combinedMode) {
       canvas.style.display = "block";
       moldContainer.style.display = "block";
@@ -236,6 +245,7 @@ async function start() {
       moldContainer.style.mixBlendMode = "";
       moldContainer.style.pointerEvents = "";
     }
+    if (moldInstance) moldVisible ? moldInstance.loop() : moldInstance.noLoop();
   }
 
   function switchMode() {
@@ -273,12 +283,13 @@ async function start() {
       { label: "Freeze", value: freezeMode ? "on" : "off" },
       { label: "Low-res (Q)", value: lowRes ? "on" : "off" },
       { label: "Auto-cycle (R)", value: autoCycle ? "on" : "off" },
+      { label: "Video (V) / Camera (K)", value: videoInjector.getSource() },
       { label: "Preset name (I)", value: labelVisible ? "visible" : "hidden" },
       { label: "Opacity viz / mold", value: `${opViz} / ${opMold}` },
     ]);
     const hint =
       "<div style='margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.1);opacity:.48;font-size:10px;line-height:1.45'>" +
-      "A audio · M mode · C combined · I label · O HUD · Q quality · Y intensity · G/F ghost/freeze · R auto · N/B/click preset · [ ] . , opacity" +
+      "A audio · M mode · C combined · I label · O HUD · Q quality · Y intensity · G/F ghost/freeze · R auto · N/B/click preset · V video file · K camera · [ ] . , opacity" +
       "</div>";
     return rows + hint;
   });
@@ -332,6 +343,16 @@ async function start() {
       return;
     }
     if ((mode !== "butterchurn" && !combinedMode) || !visualizer) return;
+    if (e.key === "v" || e.key === "V") {
+      e.preventDefault();
+      videoInjector.toggleFile();
+      return;
+    }
+    if (e.key === "k" || e.key === "K") {
+      e.preventDefault();
+      videoInjector.toggleCamera();
+      return;
+    }
     if (e.key === "r") {
       autoCycle = !autoCycle;
       console.log("[butterchurn] auto-cycle:", autoCycle ? "on" : "off");
@@ -357,6 +378,16 @@ async function start() {
   function render() {
     requestAnimationFrame(render);
     if (mode !== "butterchurn" && !combinedMode) return;
+    if (videoInjector.isActive()) {
+      const { gl, targetTexture, prevTexture } = visualizer!.renderer;
+      // Inject into both ping-pong textures. butterchurn swaps them at the START
+      // of render(), so we can't know which will be read as sampler_pc_main.
+      // Filling both guarantees the video is always the warp input, every frame.
+      // We do NOT inject into noiseTexLQ — presets like organic-mandel use it
+      // for fractal computation; corrupting it causes persistent visual breakage.
+      videoInjector.injectToFeedback(gl, targetTexture);
+      videoInjector.injectToFeedback(gl, prevTexture);
+    }
     visualizer!.render();
   }
   requestAnimationFrame(render);

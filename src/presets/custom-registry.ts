@@ -32,6 +32,11 @@ import {
   ROYAL_MASHUP_MANDEL_BRIGHT_PRESET_KEY,
   ROYAL_MASHUP_MANDEL_BRIGHT_PRESET_KEY_SORTED,
 } from "./royal-mashup-mandel-bright";
+import {
+  createVideoMandel,
+  VIDEO_MANDEL_PRESET_KEY,
+  VIDEO_MANDEL_PRESET_KEY_SORTED,
+} from "./video-mandel";
 
 export type CustomPresetDefinition = {
   /** Must match `presetMapKey.trim()` (e.g. "nebula-pearl", "lines"). */
@@ -88,6 +93,11 @@ export const CUSTOM_PRESET_REGISTRY: CustomPresetDefinition[] = [
     canonicalId: LINES_PRESET_CANONICAL_ID,
     mapKeySorted: LINES_PRESET_KEY_SORTED,
     build: createLinesPreset,
+  },
+  {
+    canonicalId: VIDEO_MANDEL_PRESET_KEY,
+    mapKeySorted: VIDEO_MANDEL_PRESET_KEY_SORTED,
+    build: createVideoMandel,
   },
 ];
 
