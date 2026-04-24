@@ -2,7 +2,11 @@
   "name": "movement",
   "private": true,
   "scripts": {
+    "setup": "node scripts/download-vosk-model.mjs",
+    "postinstall": "node scripts/download-vosk-model.mjs",
+    "predev": "node scripts/download-vosk-model.mjs",
     "dev": "concurrently \"vite\" \"uv run uvicorn backend.main:app --host 0.0.0.0 --port 8080 --reload\"",
+    "dev:small": "cross-env VOSK_MODEL=backend/models/vosk-model-small-es-0.42 concurrently \"vite\" \"uv run uvicorn backend.main:app --host 0.0.0.0 --port 8080 --reload\"",
     "dev:frontend": "vite",
     "dev:backend": "uv run uvicorn backend.main:app --host 0.0.0.0 --port 8080 --reload",
     "build": "vite build",
@@ -15,24 +19,23 @@
   },
   "dependencies": {
     "butterchurn": "^2.6.7",
-    "butterchurn-presets": "2.4.7",
-    "p5": "^1.11.0"
+    "butterchurn-presets": "2.4.7"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",
-    "@vitest/coverage-v8": "^1.0.0",
-    "@vitest/ui": "^1.0.0",
-    "jsdom": "^24.0.0",
-    "vitest": "^1.0.0",
-    "@types/p5": "^1.7.6",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
+    "@vitest/coverage-v8": "^1.0.0",
+    "@vitest/ui": "^1.0.0",
     "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
     "eslint": "^8.0.0",
     "eslint-config-prettier": "^9.0.0",
+    "jsdom": "^24.0.0",
     "milkdrop-preset-converter": "^0.1.2",
     "prettier": "^3.0.0",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^1.0.0"
   }
 }

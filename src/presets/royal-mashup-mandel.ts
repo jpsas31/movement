@@ -22,10 +22,6 @@ import { clonePresetData } from "./utils";
 export const ROYAL_MASHUP_MANDEL_PRESET_KEY_SORTED = "  royal-mashup-mandel";
 export const ROYAL_MASHUP_MANDEL_PRESET_KEY = "royal-mashup-mandel";
 
-export function isRoyalMashupMandelPresetKey(mapKey: string): boolean {
-  return mapKey.trim() === ROYAL_MASHUP_MANDEL_PRESET_KEY;
-}
-
 type WaveSlot = {
   baseVals: Record<string, number>;
   init_eqs_str?: string;
@@ -104,36 +100,39 @@ const TIERS: Record<VizIntensity, Tier> = {
   },
 };
 
-export function createRoyalMashupMandel(aggression: VizIntensity): PresetWithBase {
+/**
+ * Shared factory for royal-mashup variants. The three params that differ between
+ * royal-mashup-mandel and royal-mashup-mandel-bright are passed explicitly.
+ */
+export function buildRoyalMashupBase(
+  aggression: VizIntensity,
+  blackFloor: number,
+  tintClamp: number,
+  initQ: number,
+  presetName: string,
+): PresetWithBase {
   const p = clonePresetData(mandelverseJson) as unknown as PresetShape;
   const royal = clonePresetData(royalJson) as unknown as PresetShape;
   const t = TIERS[aggression];
 
-  // Apply Royal's color/brightness base values.
   Object.assign(p.baseVals, ROYAL_COLOR_BASE_OVERLAY);
 
-  // Copy Royal's waveform displays (waves 0–2).
   p.waves[0] = clonePresetData(royal.waves[0]);
   p.waves[1] = clonePresetData(royal.waves[1]);
   p.waves[2] = clonePresetData(royal.waves[2]);
 
-  // Disable all shapes to remove any border/overlay shapes.
   for (const s of p.shapes) {
     s.baseVals = { ...s.baseVals, enabled: 0 };
   }
 
-  // Inject a brighter tint into Mandelverse comp (higher clamp).
   if (!p.comp.includes(MANDELVERSE_COMP_RET_ANCHOR)) {
-    throw new Error(
-      "royal-mashup-mandel: Mandelverse comp no longer matches expected injection point",
-    );
+    throw new Error(`${presetName}: Mandelverse comp no longer matches expected injection point`);
   }
   p.comp = p.comp.replace(
     MANDELVERSE_COMP_RET_ANCHOR,
     [
-      "  // Reduce black: add a non-zero floor before tinting",
-      "  tmpvar_32.xyz = max(tmpvar_32.xyz, vec3(0.03));",
-      "  vec3 royTint = min(vec3(2.0), (vec3(q9, q17, q29) * vec3(1.11, 1.08, 1.14)) + vec3(0.04, 0.05, 0.055));",
+      `  tmpvar_32.xyz = max(tmpvar_32.xyz, vec3(${blackFloor}));`,
+      `  vec3 royTint = min(vec3(${tintClamp}), (vec3(q9, q17, q29) * vec3(1.11, 1.08, 1.14)) + vec3(0.04, 0.05, 0.055));`,
       "  ret = (tmpvar_32.xyz * royTint);",
       " }",
     ].join("\n"),
@@ -145,7 +144,6 @@ export function createRoyalMashupMandel(aggression: VizIntensity): PresetWithBas
   const qca = t.qColA.toFixed(2);
   const qcb = t.qColB.toFixed(2);
 
-  // Volume: combined RMS drives wave overlay color pulses on transients.
   const VOLUME_EQS = [
     "a.vol=.25*(a.bass+a.mid+a.treb);a.vol*=a.vol;",
     `a.wave_r+=${wr}*Math.sin(42*a.vol);`,
@@ -153,9 +151,6 @@ export function createRoyalMashupMandel(aggression: VizIntensity): PresetWithBas
     `a.wave_g+=${wg}*Math.sin(30*a.vol);`,
   ].join("");
 
-  // Color oscillators: slow-drifting RGB channels (wr/wb/wg) feed q9/q17/q29,
-  // which the injected comp tint uses to drive the audio-reactive color bloom.
-  // Clamp is 1.5 (vs 1.0 in star-forge) for brighter sustained output.
   const COLOR_OSCILLATOR_EQS = [
     "a.wr=.5+.42*(.6*Math.sin(1.1*a.time)+.4*Math.sin(.8*a.time));",
     "a.wb=.5+.42*(.6*Math.sin(1.6*a.time)+.4*Math.sin(.5*a.time));",
@@ -169,12 +164,11 @@ export function createRoyalMashupMandel(aggression: VizIntensity): PresetWithBas
   ].join("");
 
   p.frame_eqs_str += VOLUME_EQS + COLOR_OSCILLATOR_EQS;
-
-  // Init: higher starting color registers so early frames are already bright.
-  p.init_eqs_str += ";a.q9=0.85;a.q17=0.85;a.q29=0.85;a.wr=0.5;a.wb=0.5;a.wg=0.5;";
+  p.init_eqs_str += `;a.q9=${initQ};a.q17=${initQ};a.q29=${initQ};a.wr=0.5;a.wb=0.5;a.wg=0.5;`;
 
   return { ...p, version: 2 };
 }
 
-// Default export uses 'normal' tier.
-export default createRoyalMashupMandel("normal");
+export function createRoyalMashupMandel(aggression: VizIntensity): PresetWithBase {
+  return buildRoyalMashupBase(aggression, 0.03, 2.0, 0.85, ROYAL_MASHUP_MANDEL_PRESET_KEY);
+}

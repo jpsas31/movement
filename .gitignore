@@ -16,3 +16,6 @@ node_modules/
 
 # Build output
 static/
+
+# Vosk speech models (downloaded via scripts/download-vosk-model.sh)
+backend/models/

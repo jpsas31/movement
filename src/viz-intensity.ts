@@ -15,7 +15,7 @@ export function nextVizIntensity(current: VizIntensity): VizIntensity {
   return VIZ_INTENSITY_ORDER[(i + 1) % VIZ_INTENSITY_ORDER.length];
 }
 
-/** Gain applied before the shared AnalyserNode (Butterchurn + mold level meter). */
+/** Gain applied before the shared AnalyserNode (Butterchurn audio input). */
 export const VIZ_AUDIO_GAIN: Record<VizIntensity, number> = {
   mild: 0.62,
   normal: 1,

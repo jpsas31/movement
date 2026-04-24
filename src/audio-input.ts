@@ -58,11 +58,14 @@ export type AudioAnalyserRig = {
   toggleInput: () => Promise<void>;
   getInputKind: () => AudioInputKind;
   setAnalyserInputGain: (linear: number) => void;
+  isVoiceEnabled: () => boolean;
+  setVoiceEnabled: (on: boolean) => void;
 };
 
 export async function createAudioAnalyserRig(options?: {
   logPrefix?: string;
   onInputKindChange?: (kind: AudioInputKind, filename?: string) => void;
+  onTrigger?: (trigger: string) => void;
 }): Promise<AudioAnalyserRig> {
   const logPrefix = options?.logPrefix ?? "[audio]";
   const audioCtx = new AudioContext();
@@ -76,13 +79,38 @@ export async function createAudioAnalyserRig(options?: {
   let currentSource: AudioNode;
   let currentCleanup: () => void;
   let currentWsAudioWorklet: AudioWorkletNode | null = null;
+  let ws: WebSocket | null = null;
   let destinationConnected = false;
+  let voiceEnabled = false;
 
   const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   currentSource = audioCtx.createMediaStreamSource(micStream);
   currentSource.connect(inputGain);
   currentCleanup = () => micStream.getTracks().forEach((t) => t.stop());
   void audioCtx.resume();
+
+  await audioCtx.audioWorklet.addModule(new URL("audio-processor.ts", import.meta.url));
+  currentWsAudioWorklet = new AudioWorkletNode(audioCtx, "ws-audio-processor");
+  inputGain.connect(currentWsAudioWorklet);
+  const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${wsProto}//${window.location.host}/ws`);
+  currentWsAudioWorklet.port.onmessage = (event) => {
+    if (voiceEnabled && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(event.data);
+    }
+  };
+  ws.addEventListener("message", (event) => {
+    if (typeof event.data !== "string") return;
+    if (!voiceEnabled) return;
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg && typeof msg.trigger === "string") {
+        options?.onTrigger?.(msg.trigger);
+      }
+    } catch (err) {
+      console.warn(logPrefix, "bad ws message:", event.data, err);
+    }
+  });
 
   const levelData = new Uint8Array(analyser.frequencyBinCount);
   function getLevel(): number {
@@ -102,10 +130,6 @@ export async function createAudioAnalyserRig(options?: {
       let newSource: AudioNode;
       let newCleanup: () => void;
       let filename: string | undefined;
-      await audioCtx.audioWorklet.addModule(new URL("audio-processor.ts", import.meta.url));
-      currentWsAudioWorklet?.disconnect();
-      currentWsAudioWorklet = new AudioWorkletNode(audioCtx, "ws-audio-processor");
-      currentWsAudioWorklet.connect(analyser);
 
       if (next === "mic") {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -166,6 +190,11 @@ export async function createAudioAnalyserRig(options?: {
     getInputKind: () => inputKind,
     setAnalyserInputGain: (linear: number) => {
       inputGain.gain.value = linear;
+    },
+    isVoiceEnabled: () => voiceEnabled,
+    setVoiceEnabled: (on: boolean) => {
+      voiceEnabled = on;
+      console.log(logPrefix, "voice mode:", on ? "on" : "off");
     },
   };
 }

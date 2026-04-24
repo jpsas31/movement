@@ -2,18 +2,57 @@ import butterchurn from "butterchurn";
 import { VideoFrameInjector } from "./video-frame-injector";
 import butterchurnPresets from "butterchurn-presets";
 import { createAudioAnalyserRig, formatAudioInputLabel } from "./audio-input";
-import {
-  createMoldSketch,
-  MOLD_COUNT_DEFAULT,
-  MOLD_COUNT_LOW,
-} from "./mold-sketch";
 import { handleSharedMovementKeys } from "./movement-keys";
 import { buildRows, createOptionsSummaryHud } from "./options-summary-hud";
+import { createSidePanel, type ToggleItem } from "./side-panel";
 import {
-  applyGhostFreeze,
   clonePresetGraphForButterchurn,
   type PresetWithBase,
 } from "./preset-variants";
+import {
+  cleanExpiredRipples,
+  createRippleState,
+  getRippleAges,
+  triggerRipple,
+} from "./effects/ripple";
+import {
+  createSpiralState,
+  isSpiralIdle,
+  toggleSpiral,
+  updateSpiral,
+} from "./effects/spiral";
+import {
+  cleanExpiredBeats,
+  createHeartbeatState,
+  getHeartbeatBeats,
+  HEARTBEAT_INTERVAL_MS,
+  triggerHeartbeat,
+  triggerLoveBurst,
+} from "./effects/heartbeat";
+import {
+  createRotationState,
+  isRotationIdle,
+  toggleNostalgia,
+  toggleRotation,
+  updateRotation,
+} from "./effects/rotation";
+import { PostProcessChain } from "./effects/post-process-chain";
+import {
+  createBlackholeState,
+  toggleBlackholes,
+  updateBlackholes,
+  getBlackholeUniforms,
+  triggerMissing,
+  toggleSharing,
+  hasScriptedSharing,
+  triggerConnect,
+} from "./effects/blackhole";
+import {
+  createSeaState,
+  toggleSea,
+  updateSea,
+  isSeaIdle,
+} from "./effects/sea";
 import {
   CUSTOM_PRESET_REGISTRY,
   getCustomPresetEntry,
@@ -35,8 +74,6 @@ const BUTTERCHURN_CANVAS_ID = "movement-butterchurn-canvas";
 
 let lowRes = false;
 
-
-
 function syncButterchurnCanvasSize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
@@ -50,20 +87,21 @@ function syncButterchurnCanvasSize() {
   }
 }
 
-// --- Butterchurn canvas ---
+// --- Butterchurn canvas (hidden render target, z-index:0 behind display canvas) ---
 document.getElementById(BUTTERCHURN_CANVAS_ID)?.remove();
 const canvas = document.createElement("canvas");
 canvas.id = BUTTERCHURN_CANVAS_ID;
+// Hidden behind displayCanvas; kept in DOM so WebGL context stays active.
 canvas.style.cssText =
-  "position:fixed; inset:0; width:100vw; height:100vh; display:block; z-index:0;";
+  "position:fixed; inset:0; width:100vw; height:100vh; display:block; z-index:0; visibility:hidden;";
 document.body.appendChild(canvas);
 
 let visualizer: ReturnType<typeof butterchurn.createVisualizer> | null = null;
 
-// --- Mold container (p5 renders into this) ---
-const moldContainer = document.createElement("div");
-moldContainer.style.cssText = "position:fixed; inset:0; display:none;";
-document.body.appendChild(moldContainer);
+// --- Post-process chain (single WebGL context, FBOs, z-index:4) ---
+// ripple → spiral → heartbeat → rotation, all in one context.
+// Eliminates 3 of 4 cross-context GPU readbacks for ~75% less pipeline stall.
+const postProcessChain = new PostProcessChain();
 
 // --- Preset name label ---
 const presetLabel = document.createElement("div");
@@ -87,6 +125,15 @@ document.body.appendChild(audioInputLabel);
 
 function resize() {
   syncButterchurnCanvasSize();
+  // In lowRes mode, scale the post-process FBOs to match the butterchurn source
+  // (50% viewport). Keeps the whole pipeline at a single resolution — no pointless
+  // upsample in the chain when the source is already lower-res, and fill/readback
+  // cost shrinks ×0.25. The final rotation canvas is CSS-sized to √2×viewport
+  // regardless, so the browser bilinear-upscales on composite.
+  const scale = lowRes ? 0.5 : 1;
+  const chainW = Math.max(1, Math.floor(window.innerWidth * scale));
+  const chainH = Math.max(1, Math.floor(window.innerHeight * scale));
+  postProcessChain.resize(chainW, chainH);
   if (visualizer) {
     const q = butterchurnQualityOpts(lowRes);
     visualizer.setRendererSize(canvas.width, canvas.height, {
@@ -110,8 +157,8 @@ overlay.innerHTML = `
   <div style="font-size:48px;margin-bottom:16px">🎵</div>
   <div>Click to start visualizer</div>
   <div style="font-size:13px;margin-top:8px;opacity:0.6">Microphone access required</div>
-  <div style="font-size:12px;margin-top:10px;opacity:0.45;max-width:320px;text-align:center">After start, press <strong>A</strong> to switch between mic and computer audio (browser will ask to share a tab/screen — use “Share tab audio” when sharing a tab).</div>
-  <div style="font-size:12px;margin-top:8px;opacity:0.4;max-width:320px;text-align:center"><strong>Y</strong> cycles intensity (mild → normal → hot): <em>stock</em> presets use audio gain; <strong>custom</strong> presets in <code>src/presets</code> use unity gain and each preset’s own <code>build(tier)</code> (see <code>custom-registry.ts</code>).</div>
+  <div style="font-size:12px;margin-top:10px;opacity:0.45;max-width:320px;text-align:center">After start, press <strong>A</strong> to switch between mic and computer audio (browser will ask to share a tab/screen — use "Share tab audio" when sharing a tab).</div>
+  <div style="font-size:12px;margin-top:8px;opacity:0.4;max-width:320px;text-align:center"><strong>Y</strong> cycles intensity (mild → normal → hot): <em>stock</em> presets use audio gain; <strong>custom</strong> presets in <code>src/presets</code> use unity gain and each preset's own <code>build(tier)</code> (see <code>custom-registry.ts</code>).</div>
   <div style="font-size:12px;margin-top:6px;opacity:0.35;max-width:320px;text-align:center"><strong>O</strong> toggles a live summary of options (top-right).</div>
 `;
 document.body.appendChild(overlay);
@@ -120,9 +167,6 @@ const CYCLE_INTERVAL_MS = 20_000;
 
 async function start() {
   overlay.remove();
-  
- 
-
 
   const rig = await createAudioAnalyserRig({
     logPrefix: "[audio]",
@@ -132,6 +176,7 @@ async function start() {
           ? `Audio: ${filename} (A = mic)`
           : formatAudioInputLabel(kind, "main");
     },
+    onTrigger: (trigger) => handleSpeechTrigger(trigger),
   });
 
   syncButterchurnCanvasSize();
@@ -159,9 +204,22 @@ async function start() {
   visualizer.connectAudio(rig.analyser);
   resize();
 
+  const rippleState = createRippleState();
+  let rippleIntervalId: ReturnType<typeof setInterval> | null = null;
+  const RIPPLE_INTERVAL_MS = 1500;
+
+  const spiralState = createSpiralState();
+
+  const heartbeatState = createHeartbeatState();
+  let heartbeatIntervalId: ReturnType<typeof setInterval> | null = null;
+
+  const rotationState = createRotationState();
+  const blackholeState = createBlackholeState();
+  const seaState = createSeaState();
+
   let vizIntensity: VizIntensity = "normal";
   const allPresets: Record<string, PresetWithBase> = {
-    ...butterchurnPresets.getPresets(),
+    // ...butterchurnPresets.getPresets(),
     [MANDELVERSE_PACK_PRESET_KEY]: mandelversePackPreset,
   };
   for (const e of CUSTOM_PRESET_REGISTRY) {
@@ -170,8 +228,6 @@ async function start() {
   rebuildAllCustomSlots(allPresets, vizIntensity);
   const presetKeys = Object.keys(allPresets).sort();
   let idx = 0;
-  let ghostMode = false;
-  let freezeMode = false;
 
   function formatPresetLine(): string {
     const key = presetKeys[idx];
@@ -192,79 +248,30 @@ async function start() {
     if (entry) allPresets[key] = entry.build(vizIntensity);
     syncAnalyserGainForCurrentPreset();
     const preset = allPresets[key];
-    const p = clonePresetGraphForButterchurn(
-      applyGhostFreeze(preset, ghostMode, freezeMode),
-    );
+    const p = clonePresetGraphForButterchurn(preset);
     // blendTime 0 → blendDuration 0 → blendProgress Infinity → cos(∞) is NaN in butterchurn's mixer.
     const safeBlend = blendTime <= 0 ? 1e-6 : blendTime;
     visualizer!.loadPreset(p, safeBlend);
     presetLabel.textContent = formatPresetLine();
-    console.log(
-      "[butterchurn] preset:",
-      key,
-      freezeMode ? "(freeze)" : ghostMode ? "(ghost)" : "",
-    );
+    console.log("[butterchurn] preset:", key);
   }
   loadPreset(0);
 
   let autoCycle = false;
   const _cycleInterval = setInterval(() => {
-    if (!autoCycle || (mode !== "butterchurn" && !combinedMode)) return;
+    if (!autoCycle) return;
     idx = (idx + 1) % presetKeys.length;
     loadPreset(2.0);
   }, CYCLE_INTERVAL_MS);
 
   const videoInjector = new VideoFrameInjector();
 
-  let moldInstance: ReturnType<typeof createMoldSketch> | null = null;
-
-  function initMold() {
-    moldInstance = createMoldSketch(
-      moldContainer,
-      () => freezeMode,
-      () => rig.getLevel(),
-      lowRes ? MOLD_COUNT_LOW : MOLD_COUNT_DEFAULT,
-    );
-  }
-
-  type Mode = "butterchurn" | "mold";
-  let mode: Mode = "butterchurn";
-  let combinedMode = false;
-
-  function updateVisibility() {
-    const moldVisible = combinedMode || mode === "mold";
-    if (combinedMode) {
-      canvas.style.display = "block";
-      moldContainer.style.display = "block";
-      moldContainer.style.mixBlendMode = "screen";
-      moldContainer.style.pointerEvents = "none";
-      if (!moldInstance) initMold();
-    } else {
-      canvas.style.display = mode === "butterchurn" ? "block" : "none";
-      moldContainer.style.display = mode === "mold" ? "block" : "none";
-      moldContainer.style.mixBlendMode = "";
-      moldContainer.style.pointerEvents = "";
-    }
-    if (moldInstance) moldVisible ? moldInstance.loop() : moldInstance.noLoop();
-  }
-
-  function switchMode() {
-    mode = mode === "butterchurn" ? "mold" : "butterchurn";
-    if (mode === "mold" && !moldInstance) initMold();
-    updateVisibility();
-    console.log("[mode]", mode);
-  }
+  // displayCanvas is the topmost visible output (PostProcessChain canvas).
+  const displayCanvas = postProcessChain.canvas;
 
   const optionsHud = createOptionsSummaryHud("Movement", () => {
-    const display = combinedMode
-      ? "combined (viz + mold)"
-      : mode === "butterchurn"
-        ? "butterchurn"
-        : "mold";
-    const opViz = parseFloat(canvas.style.opacity || "1").toFixed(1);
-    const opMold = parseFloat(moldContainer.style.opacity || "1").toFixed(1);
+    const opViz = parseFloat(displayCanvas.style.opacity || "1").toFixed(1);
     const rows = buildRows([
-      { label: "Display", value: display },
       {
         label: "Preset",
         value: `${formatPresetLine()} (${idx + 1}/${presetKeys.length})`,
@@ -279,51 +286,262 @@ async function start() {
         label: "Audio in",
         value: rig.getInputKind() === "mic" ? "microphone" : "audio file",
       },
-      { label: "Ghost", value: ghostMode ? "on" : "off" },
-      { label: "Freeze", value: freezeMode ? "on" : "off" },
       { label: "Low-res (Q)", value: lowRes ? "on" : "off" },
       { label: "Auto-cycle (R)", value: autoCycle ? "on" : "off" },
       { label: "Video (V) / Camera (K)", value: videoInjector.getSource() },
+      { label: "Spiral (W)", value: spiralState.active ? "winding" : isSpiralIdle(spiralState) ? "off" : "unwinding" },
+      { label: "Ripple (E)", value: rippleIntervalId !== null ? "on" : "off" },
+      { label: "Heartbeat (H)", value: heartbeatIntervalId !== null ? "on" : "off" },
+      { label: "Rotation (T)", value: rotationState.active ? "spinning" : isRotationIdle(rotationState) ? "off" : "unwinding" },
+      { label: "Black holes (X)", value: blackholeState.active ? `on (${blackholeState.holes.length})` : "off" },
+      { label: "Extraño (Z)", value: "burst" },
+      { label: "Compartimos (S)", value: hasScriptedSharing(blackholeState) ? "on" : "off" },
+      { label: "Te amo (D)", value: "burst" },
+      { label: "Conectar (J)", value: "burst" },
+      { label: "Nostalgia (U)", value: rotationState.nostalgia ? "on" : "off" },
+      { label: "Amor (2)", value: seaState.active ? "on" : isSeaIdle(seaState) ? "off" : "fading" },
+      { label: "Voice (L)", value: rig.isVoiceEnabled() ? "listening" : "off" },
       { label: "Preset name (I)", value: labelVisible ? "visible" : "hidden" },
-      { label: "Opacity viz / mold", value: `${opViz} / ${opMold}` },
+      { label: "Opacity (viz)", value: opViz },
     ]);
     const hint =
       "<div style='margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.1);opacity:.48;font-size:10px;line-height:1.45'>" +
-      "A audio · M mode · C combined · I label · O HUD · Q quality · Y intensity · G/F ghost/freeze · R auto · N/B/click preset · V video file · K camera · [ ] . , opacity" +
+      "A audio · I label · O HUD · Q quality · Y intensity · R auto · N/B/click preset · V video file · K camera · W spiral · E ripple · H heartbeat · T rotation · X black holes · Z extraño · S compartimos · D te amo · J conectar · U nostalgia · 2 amor · L voice · . , opacity" +
       "</div>";
     return rows + hint;
   });
+
+  const sidePanel = createSidePanel({
+    getPresetKeys: () => presetKeys,
+    getCurrentIndex: () => idx,
+    onPresetSelect: (i: number) => {
+      idx = i;
+      loadPreset(1.5);
+    },
+    formatPresetName: (key: string) => key.trim(),
+    getToggles: (): ToggleItem[] => [
+      {
+        label: "Auto-cycle",
+        shortcut: "R",
+        getValue: () => (autoCycle ? "on" : "off"),
+        onToggle: () => { autoCycle = !autoCycle; },
+      },
+      {
+        label: "Spiral",
+        shortcut: "W",
+        getValue: () => (spiralState.active ? "on" : isSpiralIdle(spiralState) ? "off" : "fading"),
+        onToggle: () => toggleSpiral(spiralState),
+      },
+      {
+        label: "Ripple",
+        shortcut: "E",
+        getValue: () => (rippleIntervalId !== null ? "on" : "off"),
+        onToggle: () => {
+          if (rippleIntervalId !== null) {
+            clearInterval(rippleIntervalId);
+            rippleIntervalId = null;
+          } else {
+            triggerRipple(rippleState);
+            rippleIntervalId = setInterval(() => triggerRipple(rippleState), RIPPLE_INTERVAL_MS);
+          }
+        },
+      },
+      {
+        label: "Heartbeat",
+        shortcut: "H",
+        getValue: () => (heartbeatIntervalId !== null ? "on" : "off"),
+        onToggle: () => {
+          if (heartbeatIntervalId !== null) {
+            clearInterval(heartbeatIntervalId);
+            heartbeatIntervalId = null;
+          } else {
+            triggerHeartbeat(heartbeatState);
+            heartbeatIntervalId = setInterval(() => triggerHeartbeat(heartbeatState), HEARTBEAT_INTERVAL_MS);
+          }
+        },
+      },
+      {
+        label: "Rotation",
+        shortcut: "T",
+        getValue: () => (rotationState.active ? "on" : isRotationIdle(rotationState) ? "off" : "fading"),
+        onToggle: () => toggleRotation(rotationState),
+      },
+      {
+        label: "Black holes",
+        shortcut: "X",
+        getValue: () => (blackholeState.active ? `on (${blackholeState.holes.length})` : "off"),
+        onToggle: () => toggleBlackholes(blackholeState),
+      },
+      {
+        label: "Extraño",
+        shortcut: "Z",
+        getValue: () => "burst",
+        onToggle: () => triggerMissing(blackholeState),
+      },
+      {
+        label: "Compartimos",
+        shortcut: "S",
+        getValue: () => (hasScriptedSharing(blackholeState) ? "on" : "off"),
+        onToggle: () => toggleSharing(blackholeState),
+      },
+      {
+        label: "Te amo",
+        shortcut: "D",
+        getValue: () => "burst",
+        onToggle: () => triggerLoveBurst(heartbeatState),
+      },
+      {
+        label: "Conectar",
+        shortcut: "J",
+        getValue: () => "burst",
+        onToggle: () => triggerConnect(blackholeState),
+      },
+      {
+        label: "Nostalgia",
+        shortcut: "U",
+        getValue: () => (rotationState.nostalgia ? "on" : "off"),
+        onToggle: () => toggleNostalgia(rotationState),
+      },
+      {
+        label: "Amor",
+        shortcut: "2",
+        getValue: () => (seaState.active ? "on" : isSeaIdle(seaState) ? "off" : "fading"),
+        onToggle: () => toggleSea(seaState),
+      },
+      {
+        label: "Voice",
+        shortcut: "L",
+        getValue: () => (rig.isVoiceEnabled() ? "on" : "off"),
+        onToggle: () => rig.setVoiceEnabled(!rig.isVoiceEnabled()),
+      },
+      {
+        label: "Low-res",
+        shortcut: "Q",
+        getValue: () => (lowRes ? "on" : "off"),
+        onToggle: () => {
+          lowRes = !lowRes;
+          resize();
+        },
+      },
+      {
+        label: "Preset label",
+        shortcut: "I",
+        getValue: () => (labelVisible ? "on" : "off"),
+        onToggle: () => {
+          labelVisible = !labelVisible;
+          presetLabel.style.display = labelVisible ? "block" : "none";
+        },
+      },
+    ],
+  });
+
+  const heartbeatOnce = () => triggerHeartbeat(heartbeatState);
+  const heartbeatLoopOn = () => {
+    if (heartbeatIntervalId !== null) return;
+    triggerHeartbeat(heartbeatState);
+    heartbeatIntervalId = setInterval(heartbeatOnce, HEARTBEAT_INTERVAL_MS);
+  };
+  const heartbeatLoopOff = () => {
+    if (heartbeatIntervalId === null) return;
+    clearInterval(heartbeatIntervalId);
+    heartbeatIntervalId = null;
+  };
+  const rippleLoopOn = () => {
+    if (rippleIntervalId !== null) return;
+    triggerRipple(rippleState);
+    rippleIntervalId = setInterval(() => triggerRipple(rippleState), RIPPLE_INTERVAL_MS);
+  };
+  const rippleLoopOff = () => {
+    if (rippleIntervalId === null) return;
+    clearInterval(rippleIntervalId);
+    rippleIntervalId = null;
+  };
+  const nextPreset = () => {
+    idx = (idx + 1) % presetKeys.length;
+    loadPreset(1.5);
+  };
+
+  const compartimosOff = () => {
+    if (hasScriptedSharing(blackholeState)) toggleSharing(blackholeState);
+  };
+  const ensenasteOff = () => {
+    if (blackholeState.active) toggleBlackholes(blackholeState);
+  };
+  const futuroOff = () => {
+    if (spiralState.active) toggleSpiral(spiralState);
+  };
+  const conectarOff = () => {
+    if (rotationState.active) toggleRotation(rotationState);
+  };
+  const amorOff = () => {
+    if (seaState.active) toggleSea(seaState);
+  };
+
+  // A trigger is either:
+  // - one-shot: fire once, effect self-expires (heart pulse, ripple pulse, preset change)
+  // - timed: turn an effect on, auto-off after durationMs
+  // Triggers that share the same `off` handler share a channel — re-speaking any of
+  // them extends the same timer instead of racing, so saying "amor" during "te amo"
+  // doesn't cut the beats short.
+  type TriggerSpec =
+    | { kind: "once"; fire: () => void }
+    | { kind: "timed"; on: () => void; off: () => void; durationMs: number };
+
+  const TRIGGERS: Record<string, TriggerSpec> = {
+    extrano:      { kind: "once",  fire: () => triggerMissing(blackholeState) },
+    dejar_ir:     { kind: "once",  fire: () => triggerRipple(rippleState) },
+    felicidad:    { kind: "once",  fire: nextPreset },
+
+    te_amo:       { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 12_000 },
+    amor:         { kind: "timed", on: () => { if (!seaState.active) toggleSea(seaState); }, off: amorOff, durationMs: 10_000 },
+    enamorada:    { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 8_000 },
+    pensar_en_ti: { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 8_000 },
+    abrazo:       { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 5_000 },
+
+    tristeza:     { kind: "timed", on: rippleLoopOn,    off: rippleLoopOff,    durationMs: 8_000 },
+
+    compartimos:  { kind: "timed", on: () => { if (!hasScriptedSharing(blackholeState)) toggleSharing(blackholeState); }, off: compartimosOff, durationMs: 15_000 },
+    ensenaste:    { kind: "timed", on: () => { if (!blackholeState.active) toggleBlackholes(blackholeState); }, off: ensenasteOff, durationMs: 12_000 },
+    futuro:       { kind: "timed", on: () => { if (!spiralState.active) toggleSpiral(spiralState); },           off: futuroOff,    durationMs: 12_000 },
+    conectar:     { kind: "timed", on: () => { if (!rotationState.active) toggleRotation(rotationState); },     off: conectarOff,  durationMs: 10_000 },
+  };
+
+  const channelTimers = new Map<() => void, ReturnType<typeof setTimeout>>();
+
+  function handleSpeechTrigger(trigger: string) {
+    const spec = TRIGGERS[trigger];
+    if (!spec) return;
+    console.log("[trigger]", trigger);
+    if (spec.kind === "once") {
+      spec.fire();
+      return;
+    }
+    spec.on();
+    const prev = channelTimers.get(spec.off);
+    if (prev !== undefined) clearTimeout(prev);
+    const t = setTimeout(() => {
+      channelTimers.delete(spec.off);
+      spec.off();
+    }, spec.durationMs);
+    channelTimers.set(spec.off, t);
+  }
 
   window.addEventListener("keydown", (e) => {
     if (
       handleSharedMovementKeys(e, {
         toggleAudioInput: () => rig.toggleInput(),
-        switchMode,
-        toggleCombinedMode: () => {
-          combinedMode = !combinedMode;
-          updateVisibility();
-          console.log("[mode] combined:", combinedMode ? "on" : "off");
-        },
         toggleLabels: () => {
           labelVisible = !labelVisible;
           presetLabel.style.display = labelVisible ? "block" : "none";
         },
-        butterchurnOpacityEl: canvas,
-        moldOpacityEl: moldContainer,
-        toggleGhost: () => {
-          ghostMode = !ghostMode;
-          if (ghostMode) freezeMode = false;
-          if (visualizer) loadPreset(0);
-          console.log("[mode] ghost:", ghostMode ? "on" : "off");
-        },
-        toggleFreeze: () => {
-          freezeMode = !freezeMode;
-          if (freezeMode) ghostMode = false;
-          if (visualizer) loadPreset(0);
-          console.log("[mode] freeze:", freezeMode ? "on" : "off");
-        },
+        butterchurnOpacityEl: displayCanvas,
       })
     ) {
+      return;
+    }
+    if (e.key === "p" || e.key === "P") {
+      e.preventDefault();
+      sidePanel.toggle();
       return;
     }
     if (e.key === "o" || e.key === "O") {
@@ -342,7 +560,92 @@ async function start() {
       }
       return;
     }
-    if ((mode !== "butterchurn" && !combinedMode) || !visualizer) return;
+    if (e.key === "w" || e.key === "W") {
+      e.preventDefault();
+      toggleSpiral(spiralState);
+      console.log("[spiral]", spiralState.active ? "winding up" : "unwinding");
+      return;
+    }
+    if (e.key === "t" || e.key === "T") {
+      e.preventDefault();
+      toggleRotation(rotationState);
+      console.log("[rotation]", rotationState.active ? "spinning" : "unwinding");
+      return;
+    }
+    if (e.key === "h" || e.key === "H") {
+      e.preventDefault();
+      if (heartbeatIntervalId !== null) {
+        clearInterval(heartbeatIntervalId);
+        heartbeatIntervalId = null;
+        console.log("[heartbeat] off");
+      } else {
+        triggerHeartbeat(heartbeatState);
+        heartbeatIntervalId = setInterval(() => triggerHeartbeat(heartbeatState), HEARTBEAT_INTERVAL_MS);
+        console.log("[heartbeat] on");
+      }
+      return;
+    }
+    if (e.key === "e" || e.key === "E") {
+      e.preventDefault();
+      if (rippleIntervalId !== null) {
+        clearInterval(rippleIntervalId);
+        rippleIntervalId = null;
+        console.log("[ripple] off");
+      } else {
+        triggerRipple(rippleState);
+        rippleIntervalId = setInterval(() => triggerRipple(rippleState), RIPPLE_INTERVAL_MS);
+        console.log("[ripple] on");
+      }
+      return;
+    }
+    if (e.key === "x" || e.key === "X") {
+      e.preventDefault();
+      toggleBlackholes(blackholeState);
+      console.log("[blackhole]", blackholeState.active ? "on" : "off");
+      return;
+    }
+    if (e.key === "z" || e.key === "Z") {
+      e.preventDefault();
+      triggerMissing(blackholeState);
+      console.log("[extraño] burst");
+      return;
+    }
+    if (e.key === "s" || e.key === "S") {
+      e.preventDefault();
+      const on = toggleSharing(blackholeState);
+      console.log("[compartimos]", on ? "on" : "off");
+      return;
+    }
+    if (e.key === "d" || e.key === "D") {
+      e.preventDefault();
+      triggerLoveBurst(heartbeatState);
+      console.log("[te amo] burst");
+      return;
+    }
+    if (e.key === "j" || e.key === "J") {
+      e.preventDefault();
+      triggerConnect(blackholeState);
+      console.log("[conectar] burst");
+      return;
+    }
+    if (e.key === "u" || e.key === "U") {
+      e.preventDefault();
+      toggleNostalgia(rotationState);
+      console.log("[nostalgia]", rotationState.nostalgia ? "on" : "off");
+      return;
+    }
+    if (e.key === "2") {
+      e.preventDefault();
+      toggleSea(seaState);
+      console.log("[amor]", seaState.active ? "on" : "off");
+      return;
+    }
+    if (e.key === "l" || e.key === "L") {
+      e.preventDefault();
+      rig.setVoiceEnabled(!rig.isVoiceEnabled());
+      return;
+    }
+    if (!visualizer) return;
     if (e.key === "v" || e.key === "V") {
       e.preventDefault();
       videoInjector.toggleFile();
@@ -369,26 +672,42 @@ async function start() {
     }
   });
 
-  canvas.addEventListener("click", () => {
-    if (mode !== "butterchurn") return;
+  displayCanvas.addEventListener("click", () => {
     idx = (idx + 1) % presetKeys.length;
     loadPreset(1.5);
   });
 
   function render() {
     requestAnimationFrame(render);
-    if (mode !== "butterchurn" && !combinedMode) return;
     if (videoInjector.isActive()) {
-      const { gl, targetTexture, prevTexture } = visualizer!.renderer;
-      // Inject into both ping-pong textures. butterchurn swaps them at the START
-      // of render(), so we can't know which will be read as sampler_pc_main.
-      // Filling both guarantees the video is always the warp input, every frame.
-      // We do NOT inject into noiseTexLQ — presets like organic-mandel use it
-      // for fractal computation; corrupting it causes persistent visual breakage.
+      // Inject only into targetTexture. butterchurn swaps prevTexture↔targetTexture
+      // at the START of its render(), so what we write here becomes sampler_pc_main
+      // on this same frame — one upload per frame instead of two. We do NOT inject
+      // into noiseTexLQ — presets like organic-mandel use it for fractal computation;
+      // corrupting it causes persistent visual breakage.
+      const { gl, targetTexture } = visualizer!.renderer;
       videoInjector.injectToFeedback(gl, targetTexture);
-      videoInjector.injectToFeedback(gl, prevTexture);
     }
     visualizer!.render();
+    // Post-process chain: butterchurn → ripple → spiral → heartbeat → blackhole → sea → rotation.
+    cleanExpiredRipples(rippleState);
+    cleanExpiredBeats(heartbeatState);
+    const { ages, amps } = getHeartbeatBeats(heartbeatState);
+    updateBlackholes(blackholeState);
+    const { positions: bhPositions, masses: bhMasses } = getBlackholeUniforms(blackholeState);
+    const { time: seaTime, amp: seaAmp } = updateSea(seaState);
+    postProcessChain.render(
+      canvas,
+      getRippleAges(rippleState),
+      updateSpiral(spiralState),
+      ages,
+      amps,
+      bhPositions,
+      bhMasses,
+      seaTime,
+      seaAmp,
+      updateRotation(rotationState),
+    );
   }
   requestAnimationFrame(render);
 }

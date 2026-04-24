@@ -40,6 +40,7 @@ export function createOptionsSummaryHud(
 
   let visible = false;
   let intervalId: ReturnType<typeof setInterval> | null = null;
+  let lastHtml = "";
 
   function stopInterval() {
     if (intervalId !== null) {
@@ -49,10 +50,13 @@ export function createOptionsSummaryHud(
   }
 
   function paint() {
-    root.innerHTML =
+    const newHtml =
       `<div style="font-weight:600;letter-spacing:.02em;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,.15)">${escapeHtml(title)}</div>` +
       `<div style="margin-bottom:10px">${getBodyHtml()}</div>` +
       `<div style="opacity:.45;font-size:10px;line-height:1.35">Press <strong>O</strong> to hide · updates while open</div>`;
+    if (newHtml === lastHtml) return;
+    lastHtml = newHtml;
+    root.innerHTML = newHtml;
   }
 
   return {

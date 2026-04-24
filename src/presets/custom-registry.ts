@@ -89,19 +89,19 @@ export const CUSTOM_PRESET_REGISTRY: CustomPresetDefinition[] = [
     build: createRoyalMashupMandelBright,
     debugBasePresetKeys: [MANDELVERSE_PACK_PRESET_KEY, "$$$ Royal - Mashup (220)"],
   },
-  {
-    canonicalId: LINES_PRESET_CANONICAL_ID,
-    mapKeySorted: LINES_PRESET_KEY_SORTED,
-    build: createLinesPreset,
-  },
-  {
-    canonicalId: VIDEO_MANDEL_PRESET_KEY,
-    mapKeySorted: VIDEO_MANDEL_PRESET_KEY_SORTED,
-    build: createVideoMandel,
-  },
+  // {
+  //   canonicalId: LINES_PRESET_CANONICAL_ID,
+  //   mapKeySorted: LINES_PRESET_KEY_SORTED,
+  //   build: createLinesPreset,
+  // },
+  // {
+  //   canonicalId: VIDEO_MANDEL_PRESET_KEY,
+  //   mapKeySorted: VIDEO_MANDEL_PRESET_KEY_SORTED,
+  //   build: createVideoMandel,
+  // },
 ];
 
-export function canonicalPresetId(mapKey: string): string {
+function canonicalPresetId(mapKey: string): string {
   return mapKey.trim();
 }
 

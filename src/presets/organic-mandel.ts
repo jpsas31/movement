@@ -16,10 +16,6 @@ import type { VizIntensity } from "../viz-intensity";
 export const ORGANIC_MANDEL_PRESET_KEY_SORTED = "  organic-mandel";
 export const ORGANIC_MANDEL_PRESET_KEY = "organic-mandel";
 
-export function isOrganicMandelPresetKey(mapKey: string): boolean {
-  return mapKey.trim() === ORGANIC_MANDEL_PRESET_KEY;
-}
-
 // Palette colors (hex → linear RGB, range 0.0–1.0)
 // To convert a hex color to the vec3 format: divide each channel by 255. e.g. #FF8000 → vec3(1.0, 0.502, 0.0).
 const PAL1 = "vec3(0.396, 0.012, 0.651)"; // #6503A6 purple
@@ -131,4 +127,3 @@ export function createOrganicMandel(_aggression: VizIntensity): PresetWithBase {
   };
 }
 
-export default createOrganicMandel("normal");

@@ -10,25 +10,13 @@
 // Intensity (Y): all motion and color responsiveness scales per-tier via TIERS.
 
 import type { PresetWithBase } from "../preset-variants";
-import {
-  nextVizIntensity,
-  type VizIntensity,
-  VIZ_INTENSITY_ORDER,
-} from "../viz-intensity";
-
-export type NebulaAggression = VizIntensity;
-export const NEBULA_AGGRESSION_ORDER = VIZ_INTENSITY_ORDER;
-export const nextNebulaAggression = nextVizIntensity;
+import type { VizIntensity } from "../viz-intensity";
 
 /** Key in main.ts preset map (leading spaces keep it near top when sorted). */
 export const NEBULA_PEARL_PRESET_KEY_SORTED = "  nebula-pearl";
 
 /** Key in debug / butterchurn-presets-style maps. */
 export const NEBULA_PEARL_PRESET_KEY = "nebula-pearl";
-
-export function isNebulaPearlPresetKey(mapKey: string): boolean {
-  return mapKey.trim() === NEBULA_PEARL_PRESET_KEY;
-}
 
 type Tier = {
   /** Multiplier on the bass power expression — higher = more reactive to audio hits. */
@@ -234,4 +222,3 @@ export function createNebulaPearl(aggression: VizIntensity): PresetWithBase {
   };
 }
 
-export default createNebulaPearl("normal");

@@ -611,6 +611,176 @@ a.q12 = Math.sin(a.phase + 4.189);
 
 ---
 
+## Post-Process Effects (WebGL overlay)
+
+Post-process effects distort or augment the rendered butterchurn output **after** it leaves the pipeline. They work on **all** presets, including those with custom GLSL warp shaders.
+
+### Why preset equation injection doesn't work universally
+
+Two traps that make `pixel_eqs_str` injection unreliable for visual effects:
+
+1. **`a.x` / `a.y` are inputs, not outputs.** In per-vertex equations they hold the mesh vertex's position. Writing to them has no visible effect — the UV sampling is controlled by `a.zoom`, `a.rot`, `a.dx`, `a.dy`, `a.sx`, `a.sy`.
+
+2. **Custom GLSL warp shaders bypass the mesh entirely.** When a preset has a non-empty `warp` field, that shader samples `sampler_fw_main` (raw previous frame) directly with its own UV math. Any modifications to `a.dx` / `a.dy` in `pixel_eqs_str` are overwritten and never reach the display. Most complex presets (Mandelverse family, organic-mandel, etc.) fall into this category.
+
+### Two-canvas architecture
+
+Movement uses a split-canvas pipeline for post-process effects:
+
+```
+butterchurn canvas          (z-index: 0, visibility:hidden)
+        │  renders to hidden WebGL2 canvas
+        ▼
+RipplePostProcess canvas    (z-index: 1, visible display)
+        │  WebGL1 shader reads butterchurn canvas as texture
+        │  applies UV displacement / color effects per pixel
+        ▼
+  moldContainer             (z-index: 2, overlaid when active)
+```
+
+butterchurn's canvas stays in the DOM (killing it loses the WebGL context) but is invisible. `RipplePostProcess.render(sourceCanvas, params)` is called every frame after `visualizer.render()`.
+
+### Implementing a new effect
+
+**1. Create `src/effects/my-effect-postprocess.ts`**
+
+Copy the `RipplePostProcess` class and replace only the fragment shader. The boilerplate (quad setup, texture upload, canvas management) stays identical:
+
+```typescript
+const FS = /* glsl */ `
+  precision highp float;
+  uniform sampler2D uTex;
+  // add your uniforms here
+  varying vec2 vUv;
+
+  void main() {
+    vec2 uv = vUv;
+
+    // --- your displacement / color math here ---
+    // uv is in [0,1]x[0,1], center = vec2(0.5)
+    // Displace by modifying uv before sampling:
+    //   uv += vec2(dx, dy);
+    //   uv = clamp(uv, 0.0, 1.0);
+    // Color-grade by modifying the sampled color:
+    //   vec4 c = texture2D(uTex, uv);
+    //   c.rgb = ... ;
+    //   gl_FragColor = c;
+    // -------------------------------------------
+
+    gl_FragColor = texture2D(uTex, uv);
+  }
+`;
+```
+
+Key GLSL constraints (WebGL1 / GLSL ES 1.0):
+- Loop bounds must be compile-time constants; use `if (i >= uCount) continue;` inside a fixed-bound loop for dynamic counts.
+- No `break` in loops on some drivers; use the conditional pattern above.
+- Array uniforms: `uniform float uValues[4];` indexed by loop variable is safe.
+
+**2. Create `src/effects/my-effect.ts` (state management)**
+
+```typescript
+const DURATION_MS = 2000;
+const MAX = 4;
+
+export type MyEffectState = { triggers: number[] }; // wall-clock ms timestamps
+
+export function createMyEffectState(): MyEffectState { return { triggers: [] }; }
+
+export function triggerMyEffect(state: MyEffectState): void {
+  state.triggers.push(Date.now());
+  if (state.triggers.length > MAX) state.triggers.shift();
+}
+
+export function cleanExpired(state: MyEffectState): void {
+  const now = Date.now();
+  state.triggers = state.triggers.filter(t0 => now - t0 < DURATION_MS);
+}
+
+/** Return ages in seconds for shader uniforms. */
+export function getAges(state: MyEffectState): number[] {
+  const now = Date.now();
+  return state.triggers.map(t0 => (now - t0) / 1000);
+}
+```
+
+**3. Wire into `main.ts`**
+
+```typescript
+// Module level — alongside ripplePostProcess
+const myPostProcess = new MyEffectPostProcess();  // creates + appends its canvas
+myPostProcess.canvas.style.zIndex = "1";          // same layer as ripplePostProcess or higher
+
+// Inside start()
+const myState = createMyEffectState();
+let myIntervalId: ReturnType<typeof setInterval> | null = null;
+
+// Key handler (e.g. key "T"):
+if (e.key === "t") {
+  if (myIntervalId !== null) {
+    clearInterval(myIntervalId);
+    myIntervalId = null;
+  } else {
+    triggerMyEffect(myState);
+    myIntervalId = setInterval(() => triggerMyEffect(myState), 1500);
+  }
+}
+
+// In render():
+cleanExpired(myState);
+myPostProcess.render(canvas, getAges(myState));   // canvas = butterchurn render target
+```
+
+If the effect doesn't need the butterchurn frame as a texture (e.g. a pure additive canvas 2D overlay), use a regular `<canvas>` + `getContext("2d")` instead and skip the WebGL post-process entirely. Pure 2D overlays with `mix-blend-mode: screen` work well for additive glow effects that don't require pixel displacement.
+
+### Shipped post-process effects
+
+| Effect  | Key | Files                                         | Description                                                              |
+| ------- | --- | --------------------------------------------- | ------------------------------------------------------------------------ |
+| Ripple  | `E` | `effects/ripple.ts` + `ripple-postprocess.ts` | Expanding radial UV rings (raindrop). Discrete triggers at 1500 ms interval. Reads butterchurn canvas. |
+| Spiral  | `W` | `effects/spiral.ts` + `spiral-postprocess.ts` | Vortex rotation that winds up from center. Continuous strength float. Reads ripple canvas (chained). |
+
+### Effect chain
+
+```
+butterchurn canvas (hidden, WebGL2)
+        ↓ texImage2D
+RipplePostProcess canvas  z-index:1   ← reads butterchurn
+        ↓ texImage2D
+SpiralPostProcess canvas  z-index:2   ← reads ripple output
+        ↓ display
+```
+
+Each new effect should read from the previous effect's canvas and output to its own. Add it as the new topmost layer (`z-index` +1), `pointer-events:none`.
+
+### Ripple effect — implementation reference
+
+`src/effects/ripple.ts` — state (wall-clock timestamps), `triggerRipple`, `cleanExpiredRipples`, `getRippleAges`.
+
+`src/effects/ripple-postprocess.ts` — WebGL1 post-process. Fragment shader:
+- `dist = length(uv - vec2(0.5))` — distance from center
+- For each active ripple age: `ringRadius = age * 0.38`, `ringDist = dist - ringRadius`
+- Displacement profile: `cos(ringDist * 22.0) * exp(-ringDist² * 18.0)` — crest at ring front, trough trailing
+- `uv -= dir * amplitude` — negative sign: sampling inward = visual pixels appear pushed outward ✓
+- Ages passed as `uniform float uAges[4]`; `-1.0` sentinel = inactive slot
+
+Interval toggle pattern (key `E`): `triggerRipple` fires once immediately, then `setInterval` at 1500 ms. Toggle off clears the interval; active ripples fade to zero naturally.
+
+### Spiral effect — implementation reference
+
+`src/effects/spiral.ts` — continuous `strength` float (`0` → `SPIRAL_MAX_STRENGTH = 2.5π`). `updateSpiral(state)` called every frame, advances by `WIND_RATE * dt` when active, retreats by `UNWIND_RATE * dt` otherwise. Returns current strength.
+
+`src/effects/spiral-postprocess.ts` — WebGL1 post-process. Fragment shader:
+- `offset = uv - vec2(0.5)`, `dist = length(offset)`
+- `angle = uStrength * exp(-dist * 3.0)` — center rotates by full strength, falls off exponentially
+- Rotate `offset` by `angle` (standard 2D rotation matrix), re-add center to get displaced UV
+- `uStrength = 0` → `angle = 0` → pure pass-through
+- Reads from **ripple canvas** (not butterchurn), so both effects compose correctly
+
+Toggle pattern (key `W`): `toggleSpiral` flips `state.active`. Wind-up rate 0.9 rad/s, unwind 1.8 rad/s — takes ~8 s to reach max, ~4 s to fully unwind.
+
+---
+
 ## Converting .milk → Butterchurn JSON
 
 Use `milkdrop-preset-converter-node`:

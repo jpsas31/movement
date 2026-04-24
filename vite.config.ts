@@ -7,6 +7,10 @@ export default defineConfig({
     proxy: {
       // Forward /api/* to the Python backend
       '/api': 'http://localhost:8080',
+      '/ws': {
+        target: 'ws://localhost:8080',
+        ws: true,
+      },
     },
   },
   build: {

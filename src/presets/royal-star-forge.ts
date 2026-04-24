@@ -20,10 +20,6 @@ import { clonePresetData } from "./utils";
 export const ROYAL_STAR_FORGE_PRESET_KEY_SORTED = "  royal-star-forge";
 export const ROYAL_STAR_FORGE_PRESET_KEY = "royal-star-forge";
 
-export function isRoyalStarForgePresetKey(mapKey: string): boolean {
-  return mapKey.trim() === ROYAL_STAR_FORGE_PRESET_KEY;
-}
-
 type WaveSlot = {
   baseVals: Record<string, number>;
   init_eqs_str?: string;
@@ -162,4 +158,3 @@ export function createRoyalStarForge(aggression: VizIntensity): PresetWithBase {
   return { ...p, version: 2 };
 }
 
-export default createRoyalStarForge("normal");
