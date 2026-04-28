@@ -1,5 +1,13 @@
 # Quick Start
 
+## Windows (one-click)
+
+Double-click **`start-windows.bat`** in the project folder. First run installs Node.js + uv via `winget`, downloads a small (~40 MB) Vosk model, and launches the dev server. Subsequent runs just launch.
+
+Requirements: Windows 10 (1809+) or Windows 11 with `winget` (App Installer). If `start-windows.bat` is blocked, right-click it → **Properties** → check **Unblock** → OK.
+
+Then open `http://localhost:5173` in your browser.
+
 ## Prerequisites
 
 - **Node.js** (v18+) — for the frontend
