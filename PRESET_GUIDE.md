@@ -1224,6 +1224,92 @@ The corona **tint** cycles slowly while **motion** stays Magellan-like. **Do not
 
 ---
 
+### Worked example: `royal-pink-forge` — full palette substitution
+
+**File:** `src/presets/royal-pink-forge.ts`  
+**Donors:** same as `royal-star-forge` (Mandelverse motion + Royal Mashup waves).  
+**Goal:** swap original green/blue color identity for **dark pink** (`#C71585`) and **light pink** (`#FFB6C1`), then add a deep red wash in dark zones.
+
+This preset surfaces several **color-substitution gotchas** that don't show up when you only tweak hues. If you ever try to retheme a preset by recoloring, read this section first.
+
+#### Gotcha 1 — multiplicative tint cannot replace a hue, only attenuate it
+
+A common pattern is `ret = src * tint;` in comp. This works to push colors *toward* a tint, but it **cannot remove a channel that's already in `src`**. Light pink has `G = 0.71`, so `whitePixel * lightPink = (1.0, 0.71, 0.76)` — green is still 71% present. Multiplicative tinting toward a non-pure-channel color **cannot eliminate green**.
+
+**Fix:** abandon multiplicative tinting and do **luma → palette mapping** instead. Compute source luma (`dot(src, vec3(0.299, 0.587, 0.114))`) and use it to drive a fixed palette. Output color is determined by your palette, not the source's hue.
+
+```glsl
+float lum = dot(tmpvar_32.xyz, vec3(0.299, 0.587, 0.114));
+vec3 pinkMix = mix(darkPink, lightPink, mixT);   // mixT from q-register oscillator
+float bright = clamp(lum * gain + 0.05, 0.0, 1.0);
+float desat = pow(bright, 1.4);
+vec3 lit = mix(pinkMix * bright, vec3(bright), desat);
+```
+
+Three brightness zones emerge: `lum=0` → black, `lum≈0.5` → pink, `lum=1` → white. The `pow(bright, 1.4)` exponent controls how aggressively highlights desaturate to white (lower → more white, higher → more pink).
+
+#### Gotcha 2 — shapes draw AFTER comp, so comp tint never reaches them
+
+Mandelverse ships **4 enabled shapes** (`p.shapes[]`) with `g: 1` and `b: 1` baseVals — these render **on top of** the comp output. No matter what you do in the comp shader, those shapes paint their original green/cyan over the top.
+
+**Fix:** override `baseVals.r/g/b/r2/g2/b2` on every enabled shape. Note that **MilkDrop fills unset color channels with `1.0` for `r/g/b/a` and `0.0` for `r2/g2/b2`**, so set every channel explicitly:
+
+```ts
+Object.assign(p.shapes[i].baseVals, {
+  r: 0.78, g: 0.08, b: 0.52,
+  r2: 0.78, g2: 0.08, b2: 0.52,
+});
+```
+
+Same applies to **outer border** (`ob_r/ob_g/ob_b`) — Mandelverse's defaults `ob_g=0.1, ob_b=1` paint a blue-green frame edge that comp also can't touch.
+
+#### Gotcha 3 — wave `point_eqs_str` overrides `wave_r/g/b`
+
+Royal Mashup wave slots set `a.r = 1 + sin(sp)` and `a.g = 1 + sin(sp)` directly inside `point_eqs_str`. The global `wave_r/g/b` baseVals you set in the overlay are **ignored** for those waves because the per-point equations write last.
+
+**Fix:** append palette overrides to each wave's `point_eqs_str` so last-write-wins forces RGB onto the palette:
+
+```ts
+const darkPinkPaint =
+  `;a.r=${DARK_PINK_R}*(1+Math.sin(a.sp));` +
+  `a.g=${DARK_PINK_G}*(1+Math.sin(a.sp));` +
+  `a.b=${DARK_PINK_B}*(1+Math.sin(a.sp));`;
+p.waves[1].point_eqs_str = (p.waves[1].point_eqs_str ?? "") + darkPinkPaint;
+```
+
+#### Gotcha 4 — clamping `lit = min(vec3(1.0), pinkMix * mult)` kills highlights
+
+If you cap the multiplier at 1.0 to "stay in the palette", brightest pixels max out at `pinkMix` itself (e.g. dark pink `(0.78, 0.08, 0.52)`) — you lose all white highlights. Conversely, if you let the multiplier exceed 1.0 freely, bright pixels clamp to vec3(1.0) = white and the palette disappears.
+
+**Fix:** progressive desaturation via `mix(pinkMix * bright, vec3(bright), desat)` with `desat = pow(bright, exponent)`. Low luma → pure palette; high luma → smooth fade to white. No threshold cliffs.
+
+#### Gotcha 5 — adding a third color (red) needs sharp falloff
+
+To paint a third color in the *un-lit* zones (e.g. red in shadows), use a curve that collapses fast:
+
+```glsl
+float redMix = pow(1.0 - bright, 3.0) * (1.0 - desat);
+lit += deepRed * redMix * (0.28 + 0.15 * q17);
+```
+
+Linear `(1 - bright)` swamps mid-tones; cubic confines red to deep darks only. The `(1 - desat)` factor ensures red also fades out as highlights desaturate to white, preventing red bleed into bright spots.
+
+#### Color-substitution checklist
+
+When retheming a preset, audit every render stage that produces color:
+
+1. **Source `tmpvar_*` in comp** — replace via luma → palette mapping, not multiplicative tint.
+2. **`p.baseVals.wave_r/g/b`** — set to palette base.
+3. **`p.baseVals.ob_r/g/b`** — outer border.
+4. **`p.baseVals.ib_r/g/b`** — inner border.
+5. **`p.shapes[i].baseVals.r/g/b/r2/g2/b2`** — every enabled shape, every channel (Milkdrop fills unset with 1.0).
+6. **`p.shapes[i].frame_eqs_str` / `init_eqs_str`** — grep for `a.r =`, `a.g =`, `a.b =`.
+7. **`p.waves[i].point_eqs_str` / `frame_eqs_str`** — same grep, append palette override since last-write-wins.
+
+Skip any of these and a color will leak through.
+
+---
+
 ## Quick Reference
 
 ### Butterchurn `_str` equation cheat sheet
