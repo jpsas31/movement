@@ -5,14 +5,17 @@ title Movement - Windows Launcher
 cd /d "%~dp0"
 
 REM ── Flags ─────────────────────────────────────────────────────────────────
-REM   --download  permit network download of the Vosk model when not found locally
+REM   --download    permit network download of the Vosk model when not found locally
+REM   --no-browser  skip auto-opening Chrome at http://localhost:5173
 REM Voice mode is always on. Script searches Downloads for the Vosk model and
 REM stages it; if not found, warns (and only fetches when --download is set).
 set "WITH_DOWNLOAD=0"
+set "OPEN_BROWSER=1"
 for %%A in (%*) do (
   if /I "%%~A"=="--download"     set "WITH_DOWNLOAD=1"
   if /I "%%~A"=="-d"             set "WITH_DOWNLOAD=1"
   if /I "%%~A"=="--download-vosk" set "WITH_DOWNLOAD=1"
+  if /I "%%~A"=="--no-browser"   set "OPEN_BROWSER=0"
 )
 
 echo ================================================
@@ -21,6 +24,11 @@ if "%WITH_DOWNLOAD%"=="1" (
   echo   Download mode: ON  ^(will fetch ~40 MB model if not found locally^)
 ) else (
   echo   Download mode: OFF ^(pass --download to allow network fetch^)
+)
+if "%OPEN_BROWSER%"=="1" (
+  echo   Auto-open browser: ON  ^(localhost:5173 in Chrome after server boots^)
+) else (
+  echo   Auto-open browser: OFF ^(--no-browser^)
 )
 echo ================================================
 echo.
@@ -95,10 +103,18 @@ if "!FIND_RESULT!"=="0" (
 echo.
 echo ================================================
 echo   Starting dev server.
-echo   Open http://localhost:5173 in your browser.
+echo   http://localhost:5173 will open automatically.
 echo   Press Ctrl+C in this window to stop.
 echo ================================================
 echo.
+
+REM Schedule a background helper to open the browser ~6s after dev server boots.
+REM PowerShell handles the Chrome→default-browser fallback cleanly without the
+REM quoting headaches `cmd /c start ""` causes inside another start.
+if "%OPEN_BROWSER%"=="1" (
+  start "movement-browser" /min powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 6; try { Start-Process -FilePath 'chrome' -ArgumentList 'http://localhost:5173' -ErrorAction Stop } catch { Start-Process 'http://localhost:5173' }"
+)
+
 call npm run dev:small
 pause
 exit /b 0
