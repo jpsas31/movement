@@ -23,6 +23,11 @@ import {
   ROYAL_STAR_FORGE_PRESET_KEY_SORTED,
 } from "./royal-star-forge";
 import {
+  createRoyalPinkForge,
+  ROYAL_PINK_FORGE_PRESET_KEY,
+  ROYAL_PINK_FORGE_PRESET_KEY_SORTED,
+} from "./royal-pink-forge";
+import {
   createRoyalMashupMandel,
   ROYAL_MASHUP_MANDEL_PRESET_KEY,
   ROYAL_MASHUP_MANDEL_PRESET_KEY_SORTED,
@@ -71,24 +76,30 @@ export const CUSTOM_PRESET_REGISTRY: CustomPresetDefinition[] = [
       "Fumbling_Foo + En D & Martin - Mandelverse",
     ],
   },
+  // {
+  //   canonicalId: ROYAL_STAR_FORGE_PRESET_KEY,
+  //   mapKeySorted: ROYAL_STAR_FORGE_PRESET_KEY_SORTED,
+  //   build: createRoyalStarForge,
+  //   debugBasePresetKeys: [MANDELVERSE_PACK_PRESET_KEY, "$$$ Royal - Mashup (220)"],
+  // },
   {
-    canonicalId: ROYAL_STAR_FORGE_PRESET_KEY,
-    mapKeySorted: ROYAL_STAR_FORGE_PRESET_KEY_SORTED,
-    build: createRoyalStarForge,
+    canonicalId: ROYAL_PINK_FORGE_PRESET_KEY,
+    mapKeySorted: ROYAL_PINK_FORGE_PRESET_KEY_SORTED,
+    build: createRoyalPinkForge,
     debugBasePresetKeys: [MANDELVERSE_PACK_PRESET_KEY, "$$$ Royal - Mashup (220)"],
   },
-  {
-    canonicalId: ROYAL_MASHUP_MANDEL_PRESET_KEY,
-    mapKeySorted: ROYAL_MASHUP_MANDEL_PRESET_KEY_SORTED,
-    build: createRoyalMashupMandel,
-    debugBasePresetKeys: [MANDELVERSE_PACK_PRESET_KEY, "$$$ Royal - Mashup (220)"],
-  },
-  {
-    canonicalId: ROYAL_MASHUP_MANDEL_BRIGHT_PRESET_KEY,
-    mapKeySorted: ROYAL_MASHUP_MANDEL_BRIGHT_PRESET_KEY_SORTED,
-    build: createRoyalMashupMandelBright,
-    debugBasePresetKeys: [MANDELVERSE_PACK_PRESET_KEY, "$$$ Royal - Mashup (220)"],
-  },
+  // {
+  //   canonicalId: ROYAL_MASHUP_MANDEL_PRESET_KEY,
+  //   mapKeySorted: ROYAL_MASHUP_MANDEL_PRESET_KEY_SORTED,
+  //   build: createRoyalMashupMandel,
+  //   debugBasePresetKeys: [MANDELVERSE_PACK_PRESET_KEY, "$$$ Royal - Mashup (220)"],
+  // },
+  // {
+  //   canonicalId: ROYAL_MASHUP_MANDEL_BRIGHT_PRESET_KEY,
+  //   mapKeySorted: ROYAL_MASHUP_MANDEL_BRIGHT_PRESET_KEY_SORTED,
+  //   build: createRoyalMashupMandelBright,
+  //   debugBasePresetKeys: [MANDELVERSE_PACK_PRESET_KEY, "$$$ Royal - Mashup (220)"],
+  // },
   // {
   //   canonicalId: LINES_PRESET_CANONICAL_ID,
   //   mapKeySorted: LINES_PRESET_KEY_SORTED,
