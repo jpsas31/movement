@@ -35,7 +35,7 @@ export type BlackHole = {
   // Mass/position are driven by the scripted* callbacks as pure functions of
   // local elapsed time. Used by derived effects (missing, sharing) that reuse
   // the blackhole shader but need deterministic choreography.
-  scripted?: "missing" | "sharing" | "connect";
+  scripted?: "missing" | "sharing" | "connect" | "brush";
   scriptedElapsed?: number;
   scriptedLifetime?: number;                     // seconds; undefined = persistent
   scriptedMass?: (t: number) => number;
@@ -351,6 +351,67 @@ export function triggerConnect(state: BlackHoleState): void {
       scriptedMass: massCurve, scriptedPos: rightPos },
   );
   state.lastFrameMs = Date.now();
+}
+
+// ── Brush — single hole traces a wavy path with varying speed (enseñaste) ────
+
+const BRUSH_LIFETIME    = 5.0;   // seconds — total stroke duration
+const BRUSH_PEAK_MASS   = 1.5;   // attracting → dark lensed mark drags across
+const BRUSH_X_START     = 0.10;
+const BRUSH_X_END       = 0.90;
+const BRUSH_Y_AMP       = 0.28;  // vertical wave amplitude
+const BRUSH_WAVES       = 3;     // number of full sine waves across path
+const BRUSH_SPEED_FREQ  = 1.2;   // Hz — speed variation rate
+const BRUSH_SPEED_DEPTH = 0.45;  // < 1 keeps dwarp/dt > 0 (no backtrack)
+const BRUSH_FADE_TAIL   = 0.8;   // seconds at end where mass fades to zero
+
+function smoothstep01(a: number, b: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+/** Enseñaste — a brushstroke. One scripted hole drags across the canvas along
+ *  a sine-weave path with continuously varying speed (rápido y lento todo el
+ *  tiempo). Mass rises fast, holds, fades in the last ~0.8 s before splice. */
+export function triggerBrush(state: BlackHoleState): void {
+  state.holes = state.holes.filter((h) => h.scripted !== "brush");
+  if (state.holes.length + 1 > MAX_BH) {
+    const overflow = state.holes.length + 1 - MAX_BH;
+    let removed = 0;
+    state.holes = state.holes.filter((h) => {
+      if (removed < overflow && !h.scripted) { removed++; return false; }
+      return true;
+    });
+  }
+
+  const massCurve = (t: number): number => {
+    const rise = 1 - Math.exp(-9 * t);
+    const fade = 1 - smoothstep01(BRUSH_LIFETIME - BRUSH_FADE_TAIL, BRUSH_LIFETIME, t);
+    return BRUSH_PEAK_MASS * rise * fade;
+  };
+
+  // warpedT(t) = t + (DEPTH / (2π·f)) sin(2π·f·t)
+  // dwarp/dt = 1 + DEPTH · cos(...) ∈ [1−DEPTH, 1+DEPTH] — always positive.
+  const warpedTime = (t: number) =>
+    t + (BRUSH_SPEED_DEPTH / (2 * Math.PI * BRUSH_SPEED_FREQ))
+        * Math.sin(2 * Math.PI * BRUSH_SPEED_FREQ * t);
+
+  const pos = (t: number, h: BlackHole) => {
+    const s = Math.min(1, Math.max(0, warpedTime(t) / BRUSH_LIFETIME));
+    h.x = BRUSH_X_START + (BRUSH_X_END - BRUSH_X_START) * s;
+    h.y = 0.5 + BRUSH_Y_AMP * Math.sin(s * BRUSH_WAVES * 2 * Math.PI);
+  };
+
+  state.holes.push({
+    x: BRUSH_X_START, y: 0.5, vx: 0, vy: 0, mass: 0, phase: 0,
+    scripted: "brush", scriptedElapsed: 0, scriptedLifetime: BRUSH_LIFETIME,
+    scriptedMass: massCurve, scriptedPos: pos,
+  });
+  state.lastFrameMs = Date.now();
+}
+
+export function hasScriptedBrush(state: BlackHoleState): boolean {
+  return state.holes.some((h) => h.scripted === "brush");
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

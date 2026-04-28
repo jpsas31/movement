@@ -28,8 +28,15 @@ import {
   getHeartbeatBeats,
   HEARTBEAT_INTERVAL_MS,
   triggerHeartbeat,
+  triggerLoveBurst,
 } from "./effects/heartbeat";
 import { PostProcessChain } from "./effects/post-process-chain";
+import {
+  createNostalgiaState,
+  isNostalgiaIdle,
+  toggleNostalgia,
+  updateNostalgia,
+} from "./effects/nostalgia";
 import {
   createBlackholeState,
   toggleBlackholes,
@@ -38,12 +45,27 @@ import {
   triggerMissing,
   toggleSharing,
   hasScriptedSharing,
+  triggerConnect,
+  triggerBrush,
 } from "./effects/blackhole";
 import {
   createSeaState,
+  isSeaIdle,
   toggleSea,
   updateSea,
 } from "./effects/sea";
+import {
+  createFelicidadState,
+  isFelicidadIdle,
+  toggleFelicidad,
+  updateFelicidad,
+} from "./effects/felicidad";
+import {
+  createTristezaState,
+  isTristezaIdle,
+  toggleTristeza,
+  updateTristeza,
+} from "./effects/tristeza";
 import {
   CUSTOM_PRESET_REGISTRY,
   getCustomPresetEntry,
@@ -94,9 +116,13 @@ document.body.appendChild(canvas);
 let visualizer: ReturnType<typeof butterchurn.createVisualizer> | null = null;
 
 // --- Post-process chain (single WebGL context, FBOs, z-index:4) ---
-// ripple → spiral → heartbeat → rotation, all in one context.
+// ripple → spiral → heartbeat → blackhole → sea → output, all in one context.
 // Eliminates 3 of 4 cross-context GPU readbacks for ~75% less pipeline stall.
 const postProcessChain = new PostProcessChain();
+
+// Black body background so fade-to-black effects (e.g. "dejar ir") show black,
+// not the browser default white, when display canvas opacity drops to 0.
+document.body.style.background = "black";
 
 // --- Preset name label ---
 const presetLabel = document.createElement("div");
@@ -210,6 +236,9 @@ async function start() {
 
   const blackholeState = createBlackholeState();
   const seaState = createSeaState();
+  const nostalgiaState = createNostalgiaState();
+  const felicidadState = createFelicidadState();
+  const tristezaState = createTristezaState();
 
   let vizIntensity: VizIntensity = "normal";
   const allPresets: Record<string, PresetWithBase> = {
@@ -306,13 +335,23 @@ async function start() {
       { label: "Ripple (E)", value: rippleIntervalId !== null ? "on" : "off" },
       { label: "Heartbeat (H)", value: heartbeatIntervalId !== null ? "on" : "off" },
       { label: "Black holes (X)", value: blackholeState.active ? `on (${blackholeState.holes.length})` : "off" },
+      { label: "Blackhole burst (J)", value: "tap" },
+      { label: "Blackhole merge (C)", value: "tap" },
+      { label: "Blackhole orbit (S)", value: hasScriptedSharing(blackholeState) ? "on" : "off" },
+      { label: "Brushstroke (4)", value: "tap" },
+      { label: "Big pulse (D)", value: "tap" },
+      { label: "Fade to black (Z)", value: "tap" },
+      { label: "Pendulum sway (U)", value: nostalgiaState.active ? "swaying" : isNostalgiaIdle(nostalgiaState) ? "off" : "settling" },
+      { label: "Sea (F)", value: seaState.active ? "on" : isSeaIdle(seaState) ? "off" : "fading" },
+      { label: "Color wave (T)", value: felicidadState.active ? "on" : isFelicidadIdle(felicidadState) ? "off" : "fading" },
+      { label: "Ink drops (3)", value: tristezaState.active ? `dropping (${tristezaState.drops.length})` : isTristezaIdle(tristezaState) ? "off" : `fading (${tristezaState.drops.length})` },
       { label: "Voice (L)", value: rig.isVoiceEnabled() ? "listening" : "off" },
       { label: "Preset name (I)", value: labelVisible ? "visible" : "hidden" },
       { label: "Opacity (viz)", value: opViz },
     ]);
     const hint =
       "<div style='margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.1);opacity:.48;font-size:10px;line-height:1.45'>" +
-      "A audio · I label · O HUD · G voice-map · Q quality · Y intensity · R auto · N/B/click preset · V video file · K camera · W spiral · M spiral+zoom · E ripple · H heartbeat · X black holes · L voice · . , opacity" +
+      "A audio · I label · O HUD · G voice-map · Q quality · Y intensity · R auto · N/B/click preset · V video file · K camera · W spiral · M spiral+zoom · E ripple · H heartbeat · X black holes · J bh-burst · C bh-merge · S bh-orbit · 4 brushstroke · D big-pulse · Z fade-black · U pendulum · F sea · T color-wave · 3 ink-drops · L voice · . , opacity" +
       "</div>";
     return rows + hint;
   });
@@ -322,15 +361,21 @@ async function start() {
   // or "—" when the effect has no voice association (key-only).
   type EffectBinding = { effect: string; key: string | null; voice: string };
   const EFFECT_BINDINGS: EffectBinding[] = [
-    { effect: "Spiral",             key: "W",  voice: "futuro (12s)" },
-    { effect: "Spiral + zoom",      key: "M",  voice: "pensar en ti (8s)" },
-    { effect: "Ripple",             key: "E",  voice: "dejar ir (pulse) · tristeza (loop 8s)" },
-    { effect: "Heartbeat",          key: "H",  voice: "te amo (12s) · enamorada (8s) · abrazo (5s)" },
-    { effect: "Black holes",        key: "X",  voice: "ensenaste (12s)" },
-    { effect: "Black hole burst",   key: null, voice: "extraño" },
-    { effect: "Black hole sharing", key: null, voice: "compartimos (15s)" },
-    { effect: "Sea",                key: null, voice: "amor (10s)" },
-    { effect: "Next preset",        key: null, voice: "felicidad" },
+    { effect: "Spiral",              key: "W",  voice: "futuro (12s)" },
+    { effect: "Spiral + zoom",       key: "M",  voice: "pensar en ti (8s)" },
+    { effect: "Ripple",              key: "E",  voice: "tristeza (loop 8s) · abrazo (loop 8s)" },
+    { effect: "Fade to black",       key: "Z",  voice: "dejar ir" },
+    { effect: "Heartbeat",           key: "H",  voice: "enamorada (8s)" },
+    { effect: "Big pulse",           key: "D",  voice: "te amo" },
+    { effect: "Black holes",         key: "X",  voice: "—" },
+    { effect: "Blackhole burst",     key: "J",  voice: "extraño" },
+    { effect: "Blackhole merge",     key: "C",  voice: "conectar" },
+    { effect: "Blackhole orbit",     key: "S",  voice: "compartimos (8s)" },
+    { effect: "Brushstroke",         key: "4",  voice: "ensenaste (5s)" },
+    { effect: "Pendulum sway",       key: "U",  voice: "nostalgia (5s)" },
+    { effect: "Sea",                 key: "F",  voice: "amor (10s)" },
+    { effect: "Color wave",          key: "T",  voice: "felicidad (5s)" },
+    { effect: "Ink drops",           key: "3",  voice: "tristeza (8s)" },
   ];
   const voiceMapHud = createOptionsSummaryHud("Effects ↔ voice (G)", () =>
     buildRows(
@@ -403,6 +448,66 @@ async function start() {
         onToggle: () => toggleBlackholes(blackholeState),
       },
       {
+        label: "Blackhole burst",
+        shortcut: "J",
+        getValue: () => "tap",
+        onToggle: () => triggerMissing(blackholeState),
+      },
+      {
+        label: "Blackhole merge",
+        shortcut: "C",
+        getValue: () => "tap",
+        onToggle: () => triggerConnect(blackholeState),
+      },
+      {
+        label: "Blackhole orbit",
+        shortcut: "S",
+        getValue: () => (hasScriptedSharing(blackholeState) ? "on" : "off"),
+        onToggle: () => toggleSharing(blackholeState),
+      },
+      {
+        label: "Brushstroke",
+        shortcut: "4",
+        getValue: () => "tap",
+        onToggle: () => triggerBrush(blackholeState),
+      },
+      {
+        label: "Big pulse",
+        shortcut: "D",
+        getValue: () => "tap",
+        onToggle: () => triggerLoveBurst(heartbeatState),
+      },
+      {
+        label: "Fade to black",
+        shortcut: "Z",
+        getValue: () => "tap",
+        onToggle: () => triggerDejarIr(),
+      },
+      {
+        label: "Pendulum sway",
+        shortcut: "U",
+        getValue: () => (nostalgiaState.active ? "on" : isNostalgiaIdle(nostalgiaState) ? "off" : "fading"),
+        onToggle: () => toggleNostalgia(nostalgiaState),
+      },
+      {
+        label: "Sea",
+        shortcut: "F",
+        getValue: () => (seaState.active ? "on" : isSeaIdle(seaState) ? "off" : "fading"),
+        onToggle: () => toggleSea(seaState),
+      },
+      {
+        label: "Color wave",
+        shortcut: "T",
+        getValue: () => (felicidadState.active ? "on" : isFelicidadIdle(felicidadState) ? "off" : "fading"),
+        onToggle: () => toggleFelicidad(felicidadState),
+      },
+      {
+        label: "Ink drops",
+        shortcut: "3",
+        getValue: () => (tristezaState.active ? `on (${tristezaState.drops.length})` : isTristezaIdle(tristezaState) ? "off" : "fading"),
+        onToggle: () => toggleTristeza(tristezaState),
+      },
+      {
         label: "Voice",
         shortcut: "L",
         getValue: () => (rig.isVoiceEnabled() ? "on" : "off"),
@@ -450,16 +555,29 @@ async function start() {
     clearInterval(rippleIntervalId);
     rippleIntervalId = null;
   };
-  const nextPreset = () => {
-    idx = (idx + 1) % presetKeys.length;
-    loadPreset(1.5);
+  // "dejar ir" — fade display canvas to black, hold ~1.4s, fade back in.
+  // Total visual duration ≈ 2s (matches doc spec). Restores prior opacity so
+  // user-set "." / "," opacity tweaks survive the trigger.
+  let dejarIrPending = false;
+  const triggerDejarIr = () => {
+    if (dejarIrPending) return;
+    dejarIrPending = true;
+    const c = displayCanvas;
+    const origOpacity = c.style.opacity || "1";
+    const origTransition = c.style.transition;
+    c.style.transition = "opacity 0.25s ease-out";
+    c.style.opacity = "0";
+    setTimeout(() => {
+      c.style.opacity = origOpacity;
+      setTimeout(() => {
+        c.style.transition = origTransition;
+        dejarIrPending = false;
+      }, 350);
+    }, 1700);
   };
 
   const compartimosOff = () => {
     if (hasScriptedSharing(blackholeState)) toggleSharing(blackholeState);
-  };
-  const ensenasteOff = () => {
-    if (blackholeState.active) toggleBlackholes(blackholeState);
   };
   const futuroOff = () => {
     if (spiralState.active) toggleSpiral(spiralState);
@@ -469,6 +587,15 @@ async function start() {
   };
   const amorOff = () => {
     if (seaState.active) toggleSea(seaState);
+  };
+  const nostalgiaOff = () => {
+    if (nostalgiaState.active) toggleNostalgia(nostalgiaState);
+  };
+  const felicidadOff = () => {
+    if (felicidadState.active) toggleFelicidad(felicidadState);
+  };
+  const tristezaOff = () => {
+    if (tristezaState.active) toggleTristeza(tristezaState);
   };
 
   // A trigger is either:
@@ -482,21 +609,27 @@ async function start() {
     | { kind: "timed"; on: () => void; off: () => void; durationMs: number };
 
   const TRIGGERS: Record<string, TriggerSpec> = {
+    // ── Once: scripted bursts that self-expire ────────────────────────────────
     extrano:      { kind: "once",  fire: () => triggerMissing(blackholeState) },
-    dejar_ir:     { kind: "once",  fire: () => triggerRipple(rippleState) },
-    felicidad:    { kind: "once",  fire: nextPreset },
+    dejar_ir:     { kind: "once",  fire: triggerDejarIr },
+    te_amo:       { kind: "once",  fire: () => triggerLoveBurst(heartbeatState) },
+    conectar:     { kind: "once",  fire: () => triggerConnect(blackholeState) },
 
-    te_amo:       { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 12_000 },
+    // ── Timed: turn an effect on for N seconds, then auto-off ─────────────────
     amor:         { kind: "timed", on: () => { if (!seaState.active) toggleSea(seaState); }, off: amorOff, durationMs: 10_000 },
     enamorada:    { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 8_000 },
     pensar_en_ti: { kind: "timed", on: () => { if (!spiralState.zoomActive) toggleSpiralZoom(spiralState); }, off: pensarEnTiOff, durationMs: 8_000 },
-    abrazo:       { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 5_000 },
 
-    tristeza:     { kind: "timed", on: rippleLoopOn,    off: rippleLoopOff,    durationMs: 8_000 },
+    // abrazo = drop falling, repeated, slow constant 8s → ripple loop, NOT heartbeat.
+    abrazo:       { kind: "timed", on: rippleLoopOn,    off: rippleLoopOff,    durationMs: 8_000 },
+    tristeza:     { kind: "timed", on: () => { if (!tristezaState.active) toggleTristeza(tristezaState); }, off: tristezaOff, durationMs: 8_000 },
 
-    compartimos:  { kind: "timed", on: () => { if (!hasScriptedSharing(blackholeState)) toggleSharing(blackholeState); }, off: compartimosOff, durationMs: 15_000 },
-    ensenaste:    { kind: "timed", on: () => { if (!blackholeState.active) toggleBlackholes(blackholeState); }, off: ensenasteOff, durationMs: 12_000 },
+    // compartimos doc = 8s (not 15).
+    compartimos:  { kind: "timed", on: () => { if (!hasScriptedSharing(blackholeState)) toggleSharing(blackholeState); }, off: compartimosOff, durationMs: 8_000 },
+    ensenaste:    { kind: "once",  fire: () => triggerBrush(blackholeState) },
     futuro:       { kind: "timed", on: () => { if (!spiralState.active) toggleSpiral(spiralState); },           off: futuroOff,    durationMs: 12_000 },
+    nostalgia:    { kind: "timed", on: () => { if (!nostalgiaState.active) toggleNostalgia(nostalgiaState); },  off: nostalgiaOff, durationMs: 5_000 },
+    felicidad:    { kind: "timed", on: () => { if (!felicidadState.active) toggleFelicidad(felicidadState); },  off: felicidadOff, durationMs: 5_000 },
   };
 
   const channelTimers = new Map<() => void, ReturnType<typeof setTimeout>>();
@@ -597,6 +730,66 @@ async function start() {
       console.log("[blackhole]", blackholeState.active ? "on" : "off");
       return;
     }
+    if (e.key === "j" || e.key === "J") {
+      e.preventDefault();
+      triggerMissing(blackholeState);
+      console.log("[blackhole-burst] tap");
+      return;
+    }
+    if (e.key === "c" || e.key === "C") {
+      e.preventDefault();
+      triggerConnect(blackholeState);
+      console.log("[blackhole-connect] tap");
+      return;
+    }
+    if (e.key === "s" || e.key === "S") {
+      e.preventDefault();
+      const on = toggleSharing(blackholeState);
+      console.log("[blackhole-sharing]", on ? "on" : "off");
+      return;
+    }
+    if (e.key === "d" || e.key === "D") {
+      e.preventDefault();
+      triggerLoveBurst(heartbeatState);
+      console.log("[love-burst] tap");
+      return;
+    }
+    if (e.key === "z" || e.key === "Z") {
+      e.preventDefault();
+      triggerDejarIr();
+      console.log("[fade-black] tap");
+      return;
+    }
+    if (e.key === "u" || e.key === "U") {
+      e.preventDefault();
+      toggleNostalgia(nostalgiaState);
+      console.log("[nostalgia]", nostalgiaState.active ? "swaying" : "settling");
+      return;
+    }
+    if (e.key === "f" || e.key === "F") {
+      e.preventDefault();
+      toggleSea(seaState);
+      console.log("[sea]", seaState.active ? "on" : "off");
+      return;
+    }
+    if (e.key === "t" || e.key === "T") {
+      e.preventDefault();
+      toggleFelicidad(felicidadState);
+      console.log("[felicidad]", felicidadState.active ? "on" : "off");
+      return;
+    }
+    if (e.key === "3") {
+      e.preventDefault();
+      toggleTristeza(tristezaState);
+      console.log("[tristeza]", tristezaState.active ? "on" : "off");
+      return;
+    }
+    if (e.key === "4") {
+      e.preventDefault();
+      triggerBrush(blackholeState);
+      console.log("[brushstroke] tap");
+      return;
+    }
     if (e.key === "g" || e.key === "G") {
       e.preventDefault();
       voiceMapHud.toggle();
@@ -658,6 +851,8 @@ async function start() {
     updateBlackholes(blackholeState);
     const { positions: bhPositions, masses: bhMasses } = getBlackholeUniforms(blackholeState);
     const { time: seaTime, amp: seaAmp } = updateSea(seaState);
+    const { time: felTime, amp: felAmp } = updateFelicidad(felicidadState);
+    const { positions: dropPositions, ages: dropAges, seeds: dropSeeds, time: dropTime } = updateTristeza(tristezaState);
     const spiral = updateSpiral(spiralState);
     postProcessChain.render(
       canvas,
@@ -670,7 +865,16 @@ async function start() {
       bhMasses,
       seaTime,
       seaAmp,
+      felTime,
+      felAmp,
+      dropPositions,
+      dropAges,
+      dropSeeds,
+      dropTime,
     );
+    // Nostalgia pendulum — CSS transform on display canvas, compositor only.
+    const nostAngle = updateNostalgia(nostalgiaState);
+    displayCanvas.style.transform = nostAngle === 0 ? "" : `rotate(${nostAngle}rad)`;
   }
   requestAnimationFrame(render);
 }
