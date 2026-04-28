@@ -1,10 +1,11 @@
 @echo off
+chcp 65001 >nul
 setlocal EnableDelayedExpansion
 title Movement - Windows Launcher
 
 cd /d "%~dp0"
 
-REM ── Flags ─────────────────────────────────────────────────────────────────
+REM --- Flags --------------------------------------------------------------
 REM   --download    permit network download of the Vosk model when not found locally
 REM   --no-browser  skip auto-opening Chrome at http://localhost:5173
 REM Voice mode is always on. Script searches Downloads for the Vosk model and
@@ -12,10 +13,10 @@ REM stages it; if not found, warns (and only fetches when --download is set).
 set "WITH_DOWNLOAD=0"
 set "OPEN_BROWSER=1"
 for %%A in (%*) do (
-  if /I "%%~A"=="--download"     set "WITH_DOWNLOAD=1"
-  if /I "%%~A"=="-d"             set "WITH_DOWNLOAD=1"
+  if /I "%%~A"=="--download"      set "WITH_DOWNLOAD=1"
+  if /I "%%~A"=="-d"              set "WITH_DOWNLOAD=1"
   if /I "%%~A"=="--download-vosk" set "WITH_DOWNLOAD=1"
-  if /I "%%~A"=="--no-browser"   set "OPEN_BROWSER=0"
+  if /I "%%~A"=="--no-browser"    set "OPEN_BROWSER=0"
 )
 
 echo ================================================
@@ -55,7 +56,7 @@ if errorlevel 1 (
 
 where uv >nul 2>&1
 if errorlevel 1 (
-  echo [setup] Installing uv (Python manager) via winget...
+  echo [setup] Installing uv ^(Python manager^) via winget...
   winget install -e --id astral-sh.uv --accept-source-agreements --accept-package-agreements --silent
   if errorlevel 1 (
     echo [ERROR] uv install failed.
@@ -109,7 +110,7 @@ echo ================================================
 echo.
 
 REM Schedule a background helper to open the browser ~6s after dev server boots.
-REM PowerShell handles the Chrome→default-browser fallback cleanly without the
+REM PowerShell handles the Chrome -> default-browser fallback cleanly without the
 REM quoting headaches `cmd /c start ""` causes inside another start.
 if "%OPEN_BROWSER%"=="1" (
   start "movement-browser" /min powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 6; try { Start-Process -FilePath 'chrome' -ArgumentList 'http://localhost:5173' -ErrorAction Stop } catch { Start-Process 'http://localhost:5173' }"
