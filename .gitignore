@@ -19,3 +19,10 @@ static/
 
 # Vosk speech models (downloaded via scripts/download-vosk-model.sh)
 backend/models/
+backend/*.zip
+
+# macOS metadata
+.DS_Store
+
+# Performance profile dumps
+profiler.txt

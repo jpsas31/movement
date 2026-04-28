@@ -107,12 +107,10 @@ export function createSidePanel(config: SidePanelConfig): SidePanel {
   topBar.appendChild(titleBarCenter);
 
   const topRight = skinned(document.createElement("div"), (s, el) => {
-    el.style.cssText = `width:25px;min-width:25px;height:20px;background:url(${s.sprites.top_right}) no-repeat;position:relative;`;
-    el.innerHTML = `<div style="position:absolute;right:3px;top:3px;width:9px;height:9px;cursor:pointer;" data-close></div>`;
+    el.style.cssText = `width:25px;min-width:25px;height:20px;background:url(${s.sprites.top_right}) no-repeat;position:relative;cursor:pointer;`;
   });
-  topRight.addEventListener("click", (e) => {
-    if ((e.target as HTMLElement).dataset.close !== undefined) toggle();
-  });
+  topRight.title = "Close panel";
+  topRight.addEventListener("click", () => toggle());
   topBar.appendChild(topRight);
 
   // --- Sub-header ---

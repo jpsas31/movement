@@ -1,5 +1,5 @@
 /**
- * PostProcessChain — ripple → spiral → heartbeat → rotation in one WebGL context.
+ * PostProcessChain — ripple → spiral → heartbeat → blackhole → sea → output.
  *
  * Problem solved
  * ──────────────
@@ -9,17 +9,13 @@
  *
  * Solution
  * ────────
- * One WebGL1 context owns two ping-pong FBOs (screen resolution) and the final
- * output canvas (√2× screen for CSS rotation). The chain:
+ * One WebGL1 context owns two ping-pong FBOs and the output canvas at viewport
+ * resolution (1×). Final pass is a simple blit — no overscan, no CSS transform.
  *
  *   butterchurn (WebGL2 ctx)
  *     ↓  texImage2D — ONE cross-context readback
  *   this context:
- *     srcTex → [ripple → FBO-A] → [spiral → FBO-B] → [heartbeat → FBO-A]
- *           → [blackhole → FBO-B] → [rotation → canvas]
- *     canvas.style.transform = rotate(angle)   ← compositor thread, zero GPU cost
- *
- * FBO reads are zero-copy within the same GL context.
+ *     srcTex → [ripple] → [spiral+zoom] → [heartbeat] → [blackhole] → [sea] → [output → canvas]
  */
 
 const CHAIN_CANVAS_ID = "movement-postprocess-chain";
@@ -70,11 +66,14 @@ const FS_RIPPLE = /* glsl */ `
   }
 `;
 
-// ─── Spiral ──────────────────────────────────────────────────────────────────
+// ─── Spiral (twist + optional slow zoom-in) ──────────────────────────────────
+// uStrength = twist amount (radians at center, falls off with exp(-dist*3))
+// uZoom     = zoom factor (1.0 = none; >1.0 = zoom in via center divide)
 const FS_SPIRAL = /* glsl */ `
   precision highp float;
   uniform sampler2D uTex;
   uniform float uStrength;
+  uniform float uZoom;
   varying vec2 vUv;
 
   void main() {
@@ -83,16 +82,15 @@ const FS_SPIRAL = /* glsl */ `
     vec2 offset = uv - center;
     float dist = length(offset);
 
-    if (dist > 0.001 && abs(uStrength) > 0.0001) {
-      float angle = uStrength * exp(-dist * 3.0);
-      float cosA = cos(angle);
-      float sinA = sin(angle);
-      vec2 rotated = vec2(
-        offset.x * cosA - offset.y * sinA,
-        offset.x * sinA + offset.y * cosA
-      );
-      uv = clamp(center + rotated, 0.0, 1.0);
-    }
+    float angle = uStrength * exp(-dist * 3.0);
+    float cosA = cos(angle);
+    float sinA = sin(angle);
+    vec2 rotated = vec2(
+      offset.x * cosA - offset.y * sinA,
+      offset.x * sinA + offset.y * cosA
+    );
+    // Divide by uZoom shrinks UV around center → samples a tighter region → zoom in.
+    uv = clamp(center + rotated / uZoom, 0.0, 1.0);
 
     gl_FragColor = texture2D(uTex, uv);
   }
@@ -284,23 +282,13 @@ const FS_SEA = /* glsl */ `
   }
 `;
 
-// ─── Rotation ────────────────────────────────────────────────────────────────
-// Canvas is √2× screen; shader maps center 1/√2 region to source [0,1].
-// The overscan border (14.6% each side) fades to black so no clamped edge colour
-// is revealed when the canvas rotates.
-const FS_ROTATION = /* glsl */ `
+// ─── Output blit ─────────────────────────────────────────────────────────────
+// Final pass — copies the latest result to the canvas. Always runs.
+const FS_OUTPUT = /* glsl */ `
   precision highp float;
   uniform sampler2D uTex;
   varying vec2 vUv;
-
-  const float OVERSCAN = 1.41421356; // √2
-
-  void main() {
-    vec2 srcUv = vec2(0.5) + (vUv - vec2(0.5)) * OVERSCAN;
-    // Screen region ≈ vUv [0.146, 0.854]; 0.15/0.85 covers the full overscan ring.
-    vec2 f = smoothstep(0.0, 0.15, vUv) * smoothstep(1.0, 0.85, vUv);
-    gl_FragColor = texture2D(uTex, clamp(srcUv, 0.0, 1.0)) * (f.x * f.y);
-  }
+  void main() { gl_FragColor = texture2D(uTex, vUv); }
 `;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -323,7 +311,7 @@ export class PostProcessChain {
   private readonly progHeartbeat:  WebGLProgram;
   private readonly progBlackhole:  WebGLProgram;
   private readonly progSea:        WebGLProgram;
-  private readonly progRotation:   WebGLProgram;
+  private readonly progOutput:     WebGLProgram;
 
   /** Butterchurn canvas upload target — sole cross-context readback per frame. */
   private readonly srcTex: WebGLTexture;
@@ -333,6 +321,7 @@ export class PostProcessChain {
 
   private readonly uRippleAges:      WebGLUniformLocation;
   private readonly uSpiralStrength:  WebGLUniformLocation;
+  private readonly uSpiralZoom:      WebGLUniformLocation;
   private readonly uHeartbeatAges:   WebGLUniformLocation;
   private readonly uHeartbeatAmps:   WebGLUniformLocation;
   private readonly uBHPositions:     WebGLUniformLocation;
@@ -344,11 +333,9 @@ export class PostProcessChain {
     document.getElementById(CHAIN_CANVAS_ID)?.remove();
     const c = document.createElement("canvas");
     c.id = CHAIN_CANVAS_ID;
-    // √2× screen, centered: extends 20.7 % beyond each viewport edge.
     c.style.cssText =
-      "position:fixed;" +
-      "width:141.421vw; height:141.421vh;" +
-      "top:-20.711vh; left:-20.711vw;" +
+      "position:fixed; inset:0;" +
+      "width:100vw; height:100vh;" +
       "display:block; z-index:4; pointer-events:none;";
     document.body.appendChild(c);
     this.canvas = c;
@@ -377,10 +364,10 @@ export class PostProcessChain {
     this.progHeartbeat = this.buildProgram(VS, FS_HEARTBEAT);
     this.progBlackhole = this.buildProgram(VS, FS_BLACKHOLE);
     this.progSea       = this.buildProgram(VS, FS_SEA);
-    this.progRotation  = this.buildProgram(VS, FS_ROTATION);
+    this.progOutput    = this.buildProgram(VS, FS_OUTPUT);
 
     // Wire texture unit 0 in each program.
-    for (const prog of [this.progRipple, this.progSpiral, this.progHeartbeat, this.progBlackhole, this.progSea, this.progRotation]) {
+    for (const prog of [this.progRipple, this.progSpiral, this.progHeartbeat, this.progBlackhole, this.progSea, this.progOutput]) {
       gl.useProgram(prog);
       const loc = gl.getUniformLocation(prog, "uTex");
       if (loc !== null) gl.uniform1i(loc, 0);
@@ -399,6 +386,7 @@ export class PostProcessChain {
 
     gl.useProgram(this.progSpiral);
     this.uSpiralStrength = gl.getUniformLocation(this.progSpiral, "uStrength")!;
+    this.uSpiralZoom     = gl.getUniformLocation(this.progSpiral, "uZoom")!;
 
     gl.useProgram(this.progHeartbeat);
     this.uHeartbeatAges = gl.getUniformLocation(this.progHeartbeat, "uAges")!;
@@ -413,17 +401,14 @@ export class PostProcessChain {
     this.uSeaAmp  = gl.getUniformLocation(this.progSea, "uAmp")!;
   }
 
-  /**
-   * sw/sh = screen pixel dimensions (logical, not device pixels).
-   * FBOs are rebuilt at sw×sh; the output canvas is resized to √2×sw × √2×sh.
-   */
+  /** sw/sh = viewport pixel dimensions. FBOs and canvas all match. */
   resize(sw: number, sh: number): void {
     if (sw === this.sw && sh === this.sh) return;
     this.sw = sw;
     this.sh = sh;
 
-    this.canvas.width  = Math.round(sw * Math.SQRT2);
-    this.canvas.height = Math.round(sh * Math.SQRT2);
+    this.canvas.width  = sw;
+    this.canvas.height = sh;
 
     const gl = this.gl;
     if (this.fboA) { gl.deleteFramebuffer(this.fboA.fbo); gl.deleteTexture(this.fboA.tex); }
@@ -444,19 +429,19 @@ export class PostProcessChain {
    * @param bhMasses      — [m0,m1,…] length = BH_MAX; 0 = inactive slot
    * @param seaTime       — elapsed seconds driving sea wave phase
    * @param seaAmp        — sea effect amplitude (0 = skip pass)
-   * @param rotationAngle — rotation angle in radians (applied via CSS)
+   * @param spiralZoom    — spiral zoom factor (1 = none; >1 = zoom in)
    */
   render(
     source: HTMLCanvasElement,
     rippleAges: Float32Array,
     spiralStrength: number,
+    spiralZoom: number,
     heartbeatAges: Float32Array,
     heartbeatAmps: Float32Array,
     bhPositions: Float32Array,
     bhMasses: Float32Array,
     seaTime: number,
     seaAmp: number,
-    rotationAngle: number,
   ): void {
     if (!this.fboA || !this.fboB) return;
     const gl = this.gl;
@@ -494,13 +479,15 @@ export class PostProcessChain {
       nextFbo ^= 1;
     }
 
-    // ── Spiral ────────────────────────────────────────────────────────────────
-    if (Math.abs(spiralStrength) > 0.0001) {
+    // ── Spiral (twist + zoom) ─────────────────────────────────────────────────
+    // Active when EITHER twist or zoom deviates from identity.
+    if (Math.abs(spiralStrength) > 0.0001 || Math.abs(spiralZoom - 1) > 0.0001) {
       const target = nextFbo === 0 ? this.fboA : this.fboB;
       gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
       gl.useProgram(this.progSpiral);
       gl.bindTexture(gl.TEXTURE_2D, cur);
       gl.uniform1f(this.uSpiralStrength, spiralStrength);
+      gl.uniform1f(this.uSpiralZoom,     spiralZoom);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       cur = target.tex;
       nextFbo ^= 1;
@@ -553,13 +540,12 @@ export class PostProcessChain {
       nextFbo ^= 1;
     }
 
-    // ── Rotation — always runs, final overscan blit + CSS transform ───────────
+    // ── Output blit — always runs, simple copy of cur to canvas ───────────────
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.useProgram(this.progRotation);
+    gl.useProgram(this.progOutput);
     gl.bindTexture(gl.TEXTURE_2D, cur);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    this.canvas.style.transform = `rotate(${rotationAngle}rad)`;
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────

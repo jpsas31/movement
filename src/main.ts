@@ -19,6 +19,7 @@ import {
   createSpiralState,
   isSpiralIdle,
   toggleSpiral,
+  toggleSpiralZoom,
   updateSpiral,
 } from "./effects/spiral";
 import {
@@ -27,15 +28,7 @@ import {
   getHeartbeatBeats,
   HEARTBEAT_INTERVAL_MS,
   triggerHeartbeat,
-  triggerLoveBurst,
 } from "./effects/heartbeat";
-import {
-  createRotationState,
-  isRotationIdle,
-  toggleNostalgia,
-  toggleRotation,
-  updateRotation,
-} from "./effects/rotation";
 import { PostProcessChain } from "./effects/post-process-chain";
 import {
   createBlackholeState,
@@ -45,13 +38,11 @@ import {
   triggerMissing,
   toggleSharing,
   hasScriptedSharing,
-  triggerConnect,
 } from "./effects/blackhole";
 import {
   createSeaState,
   toggleSea,
   updateSea,
-  isSeaIdle,
 } from "./effects/sea";
 import {
   CUSTOM_PRESET_REGISTRY,
@@ -62,6 +53,10 @@ import {
   MANDELVERSE_PACK_PRESET_KEY,
   mandelversePackPreset,
 } from "./presets/mandelverse-pack-preset";
+import {
+  GUNTHRY_PINE_TREES_PRESET_KEY,
+  gunthryPineTreesPreset,
+} from "./presets/gunthry-pine-trees";
 import {
   nextVizIntensity,
   VIZ_AUDIO_GAIN,
@@ -213,15 +208,32 @@ async function start() {
   const heartbeatState = createHeartbeatState();
   let heartbeatIntervalId: ReturnType<typeof setInterval> | null = null;
 
-  const rotationState = createRotationState();
   const blackholeState = createBlackholeState();
   const seaState = createSeaState();
 
   let vizIntensity: VizIntensity = "normal";
   const allPresets: Record<string, PresetWithBase> = {
-    // ...butterchurnPresets.getPresets(),
     [MANDELVERSE_PACK_PRESET_KEY]: mandelversePackPreset,
+    [GUNTHRY_PINE_TREES_PRESET_KEY]: gunthryPineTreesPreset,
   };
+
+  // Hand-picked stock butterchurn presets (curated subset of butterchurn-presets pkg).
+  const SELECTED_STOCK_PRESETS = [
+    "Aderrasi + Geiss - Airhandler (Kali Mix) - Canvas Mix",
+    "Aderrasi - Potion of Spirits",
+    "cope + martin - mother-of-pearl",
+    "Flexi - mindblob [shiny mix]",
+    "shifter - dark tides bdrv mix 2",
+    "Zylot - Paint Spill (Music Reactive Paint Mix)",
+    "Zylot - True Visionary (Final Mix)",
+  ] as const;
+  const stockPresets = butterchurnPresets.getPresets() as Record<string, PresetWithBase>;
+  for (const k of SELECTED_STOCK_PRESETS) {
+    const p = stockPresets[k];
+    if (p) allPresets[k] = p;
+    else console.warn("[preset] stock pack missing key:", k);
+  }
+
   for (const e of CUSTOM_PRESET_REGISTRY) {
     allPresets[e.mapKeySorted] = {} as PresetWithBase;
   }
@@ -290,26 +302,44 @@ async function start() {
       { label: "Auto-cycle (R)", value: autoCycle ? "on" : "off" },
       { label: "Video (V) / Camera (K)", value: videoInjector.getSource() },
       { label: "Spiral (W)", value: spiralState.active ? "winding" : isSpiralIdle(spiralState) ? "off" : "unwinding" },
+      { label: "Spiral+zoom (M)", value: spiralState.zoomActive ? "winding" : spiralState.zoom > 1 ? "unwinding" : "off" },
       { label: "Ripple (E)", value: rippleIntervalId !== null ? "on" : "off" },
       { label: "Heartbeat (H)", value: heartbeatIntervalId !== null ? "on" : "off" },
-      { label: "Rotation (T)", value: rotationState.active ? "spinning" : isRotationIdle(rotationState) ? "off" : "unwinding" },
       { label: "Black holes (X)", value: blackholeState.active ? `on (${blackholeState.holes.length})` : "off" },
-      { label: "Extraño (Z)", value: "burst" },
-      { label: "Compartimos (S)", value: hasScriptedSharing(blackholeState) ? "on" : "off" },
-      { label: "Te amo (D)", value: "burst" },
-      { label: "Conectar (J)", value: "burst" },
-      { label: "Nostalgia (U)", value: rotationState.nostalgia ? "on" : "off" },
-      { label: "Amor (2)", value: seaState.active ? "on" : isSeaIdle(seaState) ? "off" : "fading" },
       { label: "Voice (L)", value: rig.isVoiceEnabled() ? "listening" : "off" },
       { label: "Preset name (I)", value: labelVisible ? "visible" : "hidden" },
       { label: "Opacity (viz)", value: opViz },
     ]);
     const hint =
       "<div style='margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.1);opacity:.48;font-size:10px;line-height:1.45'>" +
-      "A audio · I label · O HUD · Q quality · Y intensity · R auto · N/B/click preset · V video file · K camera · W spiral · E ripple · H heartbeat · T rotation · X black holes · Z extraño · S compartimos · D te amo · J conectar · U nostalgia · 2 amor · L voice · . , opacity" +
+      "A audio · I label · O HUD · G voice-map · Q quality · Y intensity · R auto · N/B/click preset · V video file · K camera · W spiral · M spiral+zoom · E ripple · H heartbeat · X black holes · L voice · . , opacity" +
       "</div>";
     return rows + hint;
   });
+
+  // Effect ↔ voice map overlay. Shown with G.
+  // One row per effect. Voice column lists trigger words (with duration if timed),
+  // or "—" when the effect has no voice association (key-only).
+  type EffectBinding = { effect: string; key: string | null; voice: string };
+  const EFFECT_BINDINGS: EffectBinding[] = [
+    { effect: "Spiral",             key: "W",  voice: "futuro (12s)" },
+    { effect: "Spiral + zoom",      key: "M",  voice: "pensar en ti (8s)" },
+    { effect: "Ripple",             key: "E",  voice: "dejar ir (pulse) · tristeza (loop 8s)" },
+    { effect: "Heartbeat",          key: "H",  voice: "te amo (12s) · enamorada (8s) · abrazo (5s)" },
+    { effect: "Black holes",        key: "X",  voice: "ensenaste (12s)" },
+    { effect: "Black hole burst",   key: null, voice: "extraño" },
+    { effect: "Black hole sharing", key: null, voice: "compartimos (15s)" },
+    { effect: "Sea",                key: null, voice: "amor (10s)" },
+    { effect: "Next preset",        key: null, voice: "felicidad" },
+  ];
+  const voiceMapHud = createOptionsSummaryHud("Effects ↔ voice (G)", () =>
+    buildRows(
+      EFFECT_BINDINGS.map((b) => ({
+        label: b.key ? `${b.effect} (${b.key})` : b.effect,
+        value: b.voice,
+      })),
+    ),
+  );
 
   const sidePanel = createSidePanel({
     getPresetKeys: () => presetKeys,
@@ -331,6 +361,12 @@ async function start() {
         shortcut: "W",
         getValue: () => (spiralState.active ? "on" : isSpiralIdle(spiralState) ? "off" : "fading"),
         onToggle: () => toggleSpiral(spiralState),
+      },
+      {
+        label: "Spiral + zoom",
+        shortcut: "M",
+        getValue: () => (spiralState.zoomActive ? "on" : spiralState.zoom > 1 ? "fading" : "off"),
+        onToggle: () => toggleSpiralZoom(spiralState),
       },
       {
         label: "Ripple",
@@ -361,52 +397,10 @@ async function start() {
         },
       },
       {
-        label: "Rotation",
-        shortcut: "T",
-        getValue: () => (rotationState.active ? "on" : isRotationIdle(rotationState) ? "off" : "fading"),
-        onToggle: () => toggleRotation(rotationState),
-      },
-      {
         label: "Black holes",
         shortcut: "X",
         getValue: () => (blackholeState.active ? `on (${blackholeState.holes.length})` : "off"),
         onToggle: () => toggleBlackholes(blackholeState),
-      },
-      {
-        label: "Extraño",
-        shortcut: "Z",
-        getValue: () => "burst",
-        onToggle: () => triggerMissing(blackholeState),
-      },
-      {
-        label: "Compartimos",
-        shortcut: "S",
-        getValue: () => (hasScriptedSharing(blackholeState) ? "on" : "off"),
-        onToggle: () => toggleSharing(blackholeState),
-      },
-      {
-        label: "Te amo",
-        shortcut: "D",
-        getValue: () => "burst",
-        onToggle: () => triggerLoveBurst(heartbeatState),
-      },
-      {
-        label: "Conectar",
-        shortcut: "J",
-        getValue: () => "burst",
-        onToggle: () => triggerConnect(blackholeState),
-      },
-      {
-        label: "Nostalgia",
-        shortcut: "U",
-        getValue: () => (rotationState.nostalgia ? "on" : "off"),
-        onToggle: () => toggleNostalgia(rotationState),
-      },
-      {
-        label: "Amor",
-        shortcut: "2",
-        getValue: () => (seaState.active ? "on" : isSeaIdle(seaState) ? "off" : "fading"),
-        onToggle: () => toggleSea(seaState),
       },
       {
         label: "Voice",
@@ -470,8 +464,8 @@ async function start() {
   const futuroOff = () => {
     if (spiralState.active) toggleSpiral(spiralState);
   };
-  const conectarOff = () => {
-    if (rotationState.active) toggleRotation(rotationState);
+  const pensarEnTiOff = () => {
+    if (spiralState.zoomActive) toggleSpiralZoom(spiralState);
   };
   const amorOff = () => {
     if (seaState.active) toggleSea(seaState);
@@ -495,7 +489,7 @@ async function start() {
     te_amo:       { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 12_000 },
     amor:         { kind: "timed", on: () => { if (!seaState.active) toggleSea(seaState); }, off: amorOff, durationMs: 10_000 },
     enamorada:    { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 8_000 },
-    pensar_en_ti: { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 8_000 },
+    pensar_en_ti: { kind: "timed", on: () => { if (!spiralState.zoomActive) toggleSpiralZoom(spiralState); }, off: pensarEnTiOff, durationMs: 8_000 },
     abrazo:       { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 5_000 },
 
     tristeza:     { kind: "timed", on: rippleLoopOn,    off: rippleLoopOff,    durationMs: 8_000 },
@@ -503,7 +497,6 @@ async function start() {
     compartimos:  { kind: "timed", on: () => { if (!hasScriptedSharing(blackholeState)) toggleSharing(blackholeState); }, off: compartimosOff, durationMs: 15_000 },
     ensenaste:    { kind: "timed", on: () => { if (!blackholeState.active) toggleBlackholes(blackholeState); }, off: ensenasteOff, durationMs: 12_000 },
     futuro:       { kind: "timed", on: () => { if (!spiralState.active) toggleSpiral(spiralState); },           off: futuroOff,    durationMs: 12_000 },
-    conectar:     { kind: "timed", on: () => { if (!rotationState.active) toggleRotation(rotationState); },     off: conectarOff,  durationMs: 10_000 },
   };
 
   const channelTimers = new Map<() => void, ReturnType<typeof setTimeout>>();
@@ -566,10 +559,10 @@ async function start() {
       console.log("[spiral]", spiralState.active ? "winding up" : "unwinding");
       return;
     }
-    if (e.key === "t" || e.key === "T") {
+    if (e.key === "m" || e.key === "M") {
       e.preventDefault();
-      toggleRotation(rotationState);
-      console.log("[rotation]", rotationState.active ? "spinning" : "unwinding");
+      toggleSpiralZoom(spiralState);
+      console.log("[spiral+zoom]", spiralState.zoomActive ? "on" : "off");
       return;
     }
     if (e.key === "h" || e.key === "H") {
@@ -604,40 +597,9 @@ async function start() {
       console.log("[blackhole]", blackholeState.active ? "on" : "off");
       return;
     }
-    if (e.key === "z" || e.key === "Z") {
+    if (e.key === "g" || e.key === "G") {
       e.preventDefault();
-      triggerMissing(blackholeState);
-      console.log("[extraño] burst");
-      return;
-    }
-    if (e.key === "s" || e.key === "S") {
-      e.preventDefault();
-      const on = toggleSharing(blackholeState);
-      console.log("[compartimos]", on ? "on" : "off");
-      return;
-    }
-    if (e.key === "d" || e.key === "D") {
-      e.preventDefault();
-      triggerLoveBurst(heartbeatState);
-      console.log("[te amo] burst");
-      return;
-    }
-    if (e.key === "j" || e.key === "J") {
-      e.preventDefault();
-      triggerConnect(blackholeState);
-      console.log("[conectar] burst");
-      return;
-    }
-    if (e.key === "u" || e.key === "U") {
-      e.preventDefault();
-      toggleNostalgia(rotationState);
-      console.log("[nostalgia]", rotationState.nostalgia ? "on" : "off");
-      return;
-    }
-    if (e.key === "2") {
-      e.preventDefault();
-      toggleSea(seaState);
-      console.log("[amor]", seaState.active ? "on" : "off");
+      voiceMapHud.toggle();
       return;
     }
     if (e.key === "l" || e.key === "L") {
@@ -689,24 +651,25 @@ async function start() {
       videoInjector.injectToFeedback(gl, targetTexture);
     }
     visualizer!.render();
-    // Post-process chain: butterchurn → ripple → spiral → heartbeat → blackhole → sea → rotation.
+    // Post-process chain: butterchurn → ripple → spiral(+zoom) → heartbeat → blackhole → sea → output.
     cleanExpiredRipples(rippleState);
     cleanExpiredBeats(heartbeatState);
     const { ages, amps } = getHeartbeatBeats(heartbeatState);
     updateBlackholes(blackholeState);
     const { positions: bhPositions, masses: bhMasses } = getBlackholeUniforms(blackholeState);
     const { time: seaTime, amp: seaAmp } = updateSea(seaState);
+    const spiral = updateSpiral(spiralState);
     postProcessChain.render(
       canvas,
       getRippleAges(rippleState),
-      updateSpiral(spiralState),
+      spiral.strength,
+      spiral.zoom,
       ages,
       amps,
       bhPositions,
       bhMasses,
       seaTime,
       seaAmp,
-      updateRotation(rotationState),
     );
   }
   requestAnimationFrame(render);
