@@ -79,7 +79,11 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
       a.warp = a.warp*_motion;
       a.zoom = a.zoom + 0.06*a.bass;
       a.warp = a.warp + 0.6*a.mid;
-      a.wave_a = Math.min(1, 0.4 + 0.6*(a.bass + a.treb)*0.5);
+      // Force waveform / spirograph overlay off — preset's frame_eqs sets
+      // wave_a=0 itself but earlier overlay tries to brighten it on audio.
+      // The bright white scope-line + star pattern obscures the palette;
+      // reactivity stays via zoom/warp pumps above.
+      a.wave_a = 0;
     `,
     compReplace: [
       // Inject _palette decl. Quadrant-based with narrow smoothstep transition
