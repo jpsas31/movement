@@ -25,6 +25,7 @@ import type { PresetWithBase } from "../preset-variants";
 export type StockOverlay = {
   baseValsSet?: Partial<Record<string, number>>;
   frameAppend?: string;
+  pixelAppend?: string;
 };
 
 export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
@@ -47,10 +48,19 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
 
   // 4-color palette cycle: pink → light-blue → lilac → mint, ~26 s full cycle.
   // Audio reactivity:
-  //   - idle (silent / quiet) → motion damped to 30% (zoom-deviation + warp scaled)
+  //   - idle (silent / quiet) → motion damped (zoom + warp + warpanimspeed scaled down)
   //   - peaks above baseline → bass pumps zoom, mid pumps warp, (bass+treb)
   //     brightens wave alpha (transient-only — see cope+martin notes).
+  // Note: shifter's pixel_eqs is just `a.warp = a.bass;` — that runs per-pixel
+  // AFTER our frame-level warp damping, so we ALSO append a pixel-level scale
+  // to keep the swirl tame regardless of bass loudness.
   "shifter - dark tides bdrv mix 2": {
+    baseValsSet: {
+      warpanimspeed: 0.3,  // upstream default ~1.0 drives swirl-pattern animation rate
+    },
+    pixelAppend: `
+      a.warp = a.warp*0.30;
+    `,
     frameAppend: `
       var _en = Math.max(a.bass_att, a.mid_att, a.treb_att);
       var _motion = Math.min(1, 0.10 + 0.30*Math.max(0, _en - 1.0));
@@ -78,5 +88,10 @@ export function applyStockOverlay(key: string, preset: PresetWithBase): void {
     const p = preset as PresetWithBase & { frame_eqs_str?: string };
     const prev = typeof p.frame_eqs_str === "string" ? p.frame_eqs_str : "";
     p.frame_eqs_str = prev + "\n" + overlay.frameAppend.trim() + "\n";
+  }
+  if (overlay.pixelAppend) {
+    const p = preset as PresetWithBase & { pixel_eqs_str?: string };
+    const prev = typeof p.pixel_eqs_str === "string" ? p.pixel_eqs_str : "";
+    p.pixel_eqs_str = prev + "\n" + overlay.pixelAppend.trim() + "\n";
   }
 }
