@@ -70,13 +70,16 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
       a.warp = a.warp*0.30;
     `,
     frameAppend: `
-      var _en = Math.max(a.bass_att, a.mid_att, a.treb_att);
-      var _motion = Math.min(1, 0.10 + 0.30*Math.max(0, _en - 1.0));
+      // Use RAW bass/mid/treb (not the *_att auto-leveled variants) so
+      // sustained audio doesn't normalize away — *_att adapts toward 1.0
+      // over ~seconds, killing reactivity in long sections.
+      var _en = (a.bass + a.mid + a.treb) * 0.5;
+      var _motion = Math.min(1, 0.15 + 0.45*_en);
       a.zoom = 1 + (a.zoom - 1)*_motion;
       a.warp = a.warp*_motion;
-      a.zoom = a.zoom + 0.025*Math.max(0, a.bass_att - 1.0);
-      a.warp = a.warp + 0.25*Math.max(0, a.mid_att - 1.0);
-      a.wave_a = Math.min(1, (a.wave_a !== undefined ? a.wave_a : 0.5) + 0.4*Math.max(0, (a.bass_att + a.treb_att)*0.5 - 1.0));
+      a.zoom = a.zoom + 0.06*a.bass;
+      a.warp = a.warp + 0.6*a.mid;
+      a.wave_a = Math.min(1, 0.4 + 0.6*(a.bass + a.treb)*0.5);
     `,
     compReplace: [
       // Inject _palette decl. Quadrant-based with narrow smoothstep transition
