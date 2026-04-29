@@ -1460,6 +1460,92 @@ a.wave_a = _gate * 0.18;
 
 `warpanimspeed` is the easy-to-miss one — the warp shader's swirl pattern animates regardless of zoom/warp magnitudes unless this is gated.
 
+##### 7a. Noise-floor subtraction beats simple scaling
+
+Even raw `bass+mid+treb` rarely sits exactly at 0 during "silence" — analyser noise, room hum, codec artifacts push the sum to ~0.3–0.8. A bare `Math.min(1, sum*K)` will be small but non-zero at silence (~0.05–0.15), and that residue keeps the warp shader and dx/dy field running. Subtract a hard floor BEFORE scaling so silence collapses to exactly 0:
+
+```js
+a.audioSum = a.bass + a.mid + a.treb;
+a.audioLin = Math.min(1, Math.max(0, (a.audioSum - 1.0)) * 0.7);
+```
+
+Tune the `1.0` threshold up if quiet-room noise still triggers, down if soft passages don't engage.
+
+##### 7b. Non-linear curve for stark loud-vs-quiet contrast
+
+Once you have a clean linear envelope, square or cube it for a perceptual curve where quiet is barely reactive and loud saturates:
+
+```js
+a.audioRaw = a.audioLin * a.audioLin;   // square: quiet crushed, loud preserved
+// or: a.audioRaw = a.audioLin*a.audioLin*a.audioLin;  // cube: even more aggressive
+```
+
+Linear: quiet music ~0.3, loud ~1.0 (3× ratio).
+Squared: quiet ~0.09, loud ~1.0 (11× ratio).
+Cubed: quiet ~0.03, loud ~1.0 (33× ratio).
+
+##### 7c. Cubic decay curve so buffer clears fast when audio stops
+
+Coupling decay to audio is normal (`decay = 0.97 + 0.025*audioRaw`), but a linear coupling means when audio drops, decay only falls from 0.998 to 0.97 — still preserving 97%/frame, so prior motion patterns linger 30+ frames after pause. Use a **cubic** curve so decay only stays high at peak audio:
+
+```js
+a.decay = 0.92 + 0.078 * a.audioRaw * a.audioRaw * a.audioRaw;
+```
+
+| audioRaw | decay | frames to 1% |
+|---------:|------:|-------------:|
+| 0.0 | 0.920 | ~55 frames |
+| 0.5 | 0.930 | ~63 |
+| 0.8 | 0.960 | ~110 |
+| 1.0 | 0.998 | ~2300 |
+
+At silence the buffer wipes in ~150ms (60 fps). On a sustained loud passage motion accumulates. **Decoupling decay from audio is the difference between "preset is moving when I pause" and "preset goes still immediately."**
+
+##### 7d. Held state in pixel_eqs needs explicit audio gating
+
+Stock preset pixel_eqs often *holds* values across frames when no beat fires:
+
+```js
+a.dx_r = .05 * equal(a.thresh, 2) * Math.sin(5*a.time)
+       + (1 - equal(a.thresh, 2)) * a.dx_r;   // hold prior dx_r
+a.dx += a.dx_r * Math.sin(...) * Math.sin(a.time);
+```
+
+So once a beat sets `dx_r` to non-zero, it persists FOREVER (until next beat overwrites). At silence, `dx_r` keeps adding motion every frame even though the beat-detector itself isn't firing. Gate the **accumulation lines** (not just the setter) so silence = no contribution:
+
+```ts
+function gateDxDyByAudio(src: string): string {
+  return src
+    .replace(/a\.dx\+=([^;]+);/g, "a.dx+=($1)*a.audioRaw;")
+    .replace(/a\.dy\+=([^;]+);/g, "a.dy+=($1)*a.audioRaw;");
+}
+```
+
+Run this AFTER `scaleTimeCoeff` / motion scaling. Requires `a.audioRaw` to be defined in the appended `frame_eqs_str` so it's in scope when `pixel_eqs_str` runs.
+
+##### 7e. Split BEAT vs IDLE motion factors
+
+When the same scaling factor controls both per-beat kicks (`a.dx_r=.05*...`) AND always-on fields (`a.zoom-=.0825*pow(...)`), you can't tune them independently. Split:
+
+```ts
+const BEAT_MOTION_FACTOR = 0.60;   // kicks on bass beat — keep punchy
+const IDLE_FIELD_FACTOR  = 0.0;    // always-on rotational/zoom field — kill at idle
+
+function scaleAderrasiMotion(src: string, beat: number, idle: number): string {
+  return src
+    .replace(/a\.dx_r=\.05\*/g,    `a.dx_r=${(0.05 * beat).toFixed(4)}*`)
+    .replace(/a\.dy_r=\.056\*/g,   `a.dy_r=${(0.056 * beat).toFixed(4)}*`)
+    .replace(/a\.zoom-=\.0825\*/g, `a.zoom-=${(0.0825 * idle).toFixed(4)}*`)
+    .replace(/a\.rot-=\.039375\*/g,`a.rot-=${(0.039375 * idle).toFixed(5)}*`);
+}
+```
+
+`IDLE_FIELD_FACTOR=0` zeroes the always-on swirl, making silence rely entirely on beat-triggered (and audio-gated) `dx_r/dy_r` for any motion. Beats stay strong via independent `BEAT_MOTION_FACTOR`.
+
+##### 7f. baseVals are seeds when frame_eqs sets the same key
+
+Setting `bv.warpanimspeed = 0.6` doesn't matter if your appended `frame_eqs_str` writes `a.warpanimspeed = 0.5*a.audioRaw` every frame — the per-frame value wins. Same for `decay`, `warpscale`, `zoom`, etc. Document this so a future reader doesn't waste time tweaking baseVals when frame_eqs is the actual driver. Reference exemplar: `src/presets/aderrasi-potion-slow.ts`.
+
 ### JSON-backed slow variants (gunthry-style)
 
 Pattern for deeply modifying upstream presets (used for Aderrasi Potion of Spirits, Flexi mindblob, Zylot Paint Spill, Zylot True Visionary):
@@ -1484,6 +1570,8 @@ src.pixel_eqs_str = src.pixel_eqs_str
   .replace(/a\.dx_r=\.05\*/g,    `a.dx_r=${(0.05 * MOTION_FACTOR).toFixed(4)}*`)
   .replace(/a\.zoom-=\.0825\*/g, `a.zoom-=${(0.0825 * MOTION_FACTOR).toFixed(4)}*`);
 ```
+
+For finer control, **split** the factor into per-beat kicks vs always-on fields (gotcha §7e), and **gate dx/dy accumulation** by audio so held `dx_r`/`dy_r` values don't leak motion at silence (gotcha §7d). See `src/presets/aderrasi-potion-slow.ts` for the full pattern: noise-floor subtraction → squared envelope → cubic decay → split motion factors → dx/dy gate.
 
 #### Spring-physics presets need different scaling
 
