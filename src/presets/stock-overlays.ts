@@ -28,15 +28,20 @@ export type StockOverlay = {
 };
 
 export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
-  // Boost audio reactivity — bass pumps zoom, mid drives warp, treb tints.
+  // Boost audio reactivity — only on TRANSIENTS above baseline. butterchurn's
+  // *_att variables idle near 1.0; previous overlay added a constant 0.4 every
+  // frame, which clamped wave_r/g/b to white and washed out the preset's
+  // native pearl-iridescence palette. Now `Math.max(0, att-1)` adds zero at
+  // idle (preserving original colors) and only kicks in when audio actually
+  // peaks above its rolling average.
   "cope + martin - mother-of-pearl": {
     frameAppend: `
-      a.zoom = a.zoom + 0.06*a.bass_att;
-      a.warp = a.warp + 0.7*a.mid_att;
-      a.wave_r = Math.min(1, a.wave_r + 0.4*a.treb_att);
-      a.wave_g = Math.min(1, a.wave_g + 0.4*a.bass_att);
-      a.wave_b = Math.min(1, a.wave_b + 0.4*a.mid_att);
-      a.wave_a = Math.min(1, a.wave_a + 0.5*(a.bass_att + a.treb_att));
+      a.zoom = a.zoom + 0.05*Math.max(0, a.bass_att - 1.0);
+      a.warp = a.warp + 0.6*Math.max(0, a.mid_att - 1.0);
+      a.wave_r = a.wave_r + 0.30*Math.max(0, a.treb_att - 1.0);
+      a.wave_g = a.wave_g + 0.30*Math.max(0, a.bass_att - 1.0);
+      a.wave_b = a.wave_b + 0.30*Math.max(0, a.mid_att - 1.0);
+      a.wave_a = Math.min(1, a.wave_a + 0.35*Math.max(0, (a.bass_att + a.treb_att)*0.5 - 1.0));
     `,
   },
 
