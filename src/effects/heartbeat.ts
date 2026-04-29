@@ -21,13 +21,18 @@ export type HeartbeatState = {
    *  PostProcessChain without allocating. Length = MAX_BEATS. */
   agesScratch: Float32Array;
   ampsScratch: Float32Array;
+  /** Reused result wrapper so getHeartbeatBeats() doesn't allocate per call. */
+  _result: { ages: Float32Array; amps: Float32Array };
 };
 
 export function createHeartbeatState(): HeartbeatState {
+  const agesScratch = new Float32Array(MAX_BEATS);
+  const ampsScratch = new Float32Array(MAX_BEATS);
   return {
     beats: [],
-    agesScratch: new Float32Array(MAX_BEATS),
-    ampsScratch: new Float32Array(MAX_BEATS),
+    agesScratch,
+    ampsScratch,
+    _result: { ages: agesScratch, amps: ampsScratch },
   };
 }
 
@@ -84,5 +89,5 @@ export function getHeartbeatBeats(state: HeartbeatState): {
     ages[i] = -1;
     amps[i] = 0;
   }
-  return { ages, amps };
+  return state._result;
 }

@@ -75,6 +75,10 @@ import {
   gunthryPineTreesPreset,
 } from "./presets/gunthry-pine-trees";
 import {
+  ADERRASI_POTION_SLOW_PRESET_KEY_SORTED,
+  aderrasiPotionSlowPreset,
+} from "./presets/aderrasi-potion-slow";
+import {
   nextVizIntensity,
   VIZ_AUDIO_GAIN,
   type VizIntensity,
@@ -249,12 +253,12 @@ async function start() {
   const allPresets: Record<string, PresetWithBase> = {
     [MANDELVERSE_PACK_PRESET_KEY]: mandelversePackPreset,
     [GUNTHRY_PINE_TREES_PRESET_KEY]: gunthryPineTreesPreset,
+    [ADERRASI_POTION_SLOW_PRESET_KEY_SORTED]: aderrasiPotionSlowPreset,
   };
 
   // Hand-picked stock butterchurn presets (curated subset of butterchurn-presets pkg).
   const SELECTED_STOCK_PRESETS = [
     "Aderrasi + Geiss - Airhandler (Kali Mix) - Canvas Mix",
-    "Aderrasi - Potion of Spirits",
     "cope + martin - mother-of-pearl",
     "Flexi - mindblob [shiny mix]",
     "shifter - dark tides bdrv mix 2",
@@ -325,6 +329,12 @@ async function start() {
 
   // displayCanvas is the topmost visible output (PostProcessChain canvas).
   const displayCanvas = postProcessChain.canvas;
+  // Initially the chain has nothing to draw; the butterchurn canvas is what
+  // the user sees. The render loop flips this when the first effect activates.
+  let chainVisible = true;
+  displayCanvas.style.visibility = "hidden";
+  canvas.style.visibility = "visible";
+  chainVisible = false;
 
   const optionsHud = createOptionsSummaryHud("Movement", () => {
     const opViz = parseFloat(displayCanvas.style.opacity || "1").toFixed(1);
@@ -886,7 +896,7 @@ async function start() {
     const { time: seaTime, amp: seaAmp } = updateSea(seaState);
     const { time: felTime, amp: felAmp } = updateFelicidad(felicidadState);
     const spiral = updateSpiral(spiralState);
-    postProcessChain.render(
+    const chainDrew = postProcessChain.render(
       canvas,
       getRippleAges(rippleState),
       spiral.strength,
@@ -900,6 +910,15 @@ async function start() {
       felTime,
       felAmp,
     );
+    // When no post-process effect is on, hide the chain canvas and show the
+    // butterchurn canvas directly. Saves the texImage2D upload + output blit
+    // (~3 ms at full DPR) every idle frame. Visibility flips only on transition,
+    // not every frame, so style writes don't churn the layer tree.
+    if (chainDrew !== chainVisible) {
+      chainVisible = chainDrew;
+      displayCanvas.style.visibility = chainDrew ? "visible" : "hidden";
+      canvas.style.visibility = chainDrew ? "hidden" : "visible";
+    }
     // Nostalgia pendulum — CSS transform on display canvas, compositor only.
     const nostAngle = updateNostalgia(nostalgiaState);
     displayCanvas.style.transform = nostAngle === 0 ? "" : `rotate(${nostAngle}rad)`;

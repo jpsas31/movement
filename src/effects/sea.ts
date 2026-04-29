@@ -22,10 +22,13 @@ export type SeaState = {
   envelope: number;         // 0..1 smoothed on/off envelope
   elapsed: number;          // seconds since state creation (drives shader phase)
   lastFrameMs: number;
+  // Per-state result object reused across updateSea() calls so the render
+  // loop's destructure doesn't allocate a fresh object literal every frame.
+  _result: { time: number; amp: number };
 };
 
 export function createSeaState(): SeaState {
-  return { active: false, envelope: 0, elapsed: 0, lastFrameMs: Date.now() };
+  return { active: false, envelope: 0, elapsed: 0, lastFrameMs: Date.now(), _result: { time: 0, amp: 0 } };
 }
 
 export function toggleSea(state: SeaState): void {
@@ -50,7 +53,9 @@ export function updateSea(state: SeaState): { time: number; amp: number } {
   // Tide ± TIDE_DEPTH — slow amplitude breath centered on 1.0 so baseline wave
   // strength is preserved and peaks/troughs feel like a tide coming and going.
   const tide = 1 + TIDE_DEPTH * Math.sin((2 * Math.PI * state.elapsed) / TIDE_PERIOD_S);
-  return { time: state.elapsed, amp: state.envelope * tide };
+  state._result.time = state.elapsed;
+  state._result.amp = state.envelope * tide;
+  return state._result;
 }
 
 export function isSeaIdle(state: SeaState): boolean {

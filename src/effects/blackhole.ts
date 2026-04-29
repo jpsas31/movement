@@ -35,7 +35,7 @@ export type BlackHole = {
   // Mass/position are driven by the scripted* callbacks as pure functions of
   // local elapsed time. Used by derived effects (missing, sharing) that reuse
   // the blackhole shader but need deterministic choreography.
-  scripted?: "missing" | "sharing" | "connect" | "brush";
+  scripted?: "missing" | "sharing" | "connect" | "brush" | "fadeout";
   scriptedElapsed?: number;
   scriptedLifetime?: number;                     // seconds; undefined = persistent
   scriptedMass?: (t: number) => number;
@@ -52,25 +52,56 @@ export type BlackHoleState = {
    *  Array allocation in the render loop. Length = MAX_BH*2 / MAX_BH. */
   positionsScratch: Float32Array;
   massesScratch: Float32Array;
+  /** Reused result wrapper so getBlackholeUniforms() doesn't allocate per call. */
+  _result: { positions: Float32Array; masses: Float32Array };
 };
 
 export function createBlackholeState(): BlackHoleState {
+  const positionsScratch = new Float32Array(MAX_BH * 2);
+  const massesScratch = new Float32Array(MAX_BH);
   return {
     holes: [],
     active: false,
     lastFrameMs: Date.now(),
     elapsed: 0,
-    positionsScratch: new Float32Array(MAX_BH * 2),
-    massesScratch: new Float32Array(MAX_BH),
+    positionsScratch,
+    massesScratch,
+    _result: { positions: positionsScratch, masses: massesScratch },
   };
 }
 
-/** Toggle on (spawn default pair) / off (remove non-scripted holes).
- *  Scripted effects (missing/sharing) live independently and aren't affected by this toggle. */
+const BLACKHOLE_FADEOUT_LIFETIME = 1.5;  // seconds — non-scripted holes ease out on toggle off
+const BLACKHOLE_FADEOUT_DECAY    = 1.5;  // mass decay coefficient — m(t) = m0 * e^(-DECAY*t)
+
+/** Toggle on (spawn default pair) / off (fade out non-scripted holes over
+ *  ~1.5 s instead of cutting them instantly). On toggle off, each non-scripted
+ *  hole is converted into a scripted "fadeout" with frozen position and a mass
+ *  that decays exponentially before being spliced. Scripted effects
+ *  (missing/sharing/connect/brush) live independently and aren't affected. */
 export function toggleBlackholes(state: BlackHoleState): void {
   state.active = !state.active;
-  const scripted = state.holes.filter((h) => h.scripted);
-  state.holes = state.active ? [...scripted, ...defaultPair()] : scripted;
+  if (state.active) {
+    const scripted = state.holes.filter((h) => h.scripted);
+    state.holes = [...scripted, ...defaultPair()];
+  } else {
+    // Convert each non-scripted hole into a frozen-position fadeout.
+    const fadeMass = (m0: number) =>
+      (t: number): number => m0 * Math.exp(-BLACKHOLE_FADEOUT_DECAY * t);
+    state.holes = state.holes.map((h) => {
+      if (h.scripted) return h;
+      const frozenX = h.x;
+      const frozenY = h.y;
+      return {
+        ...h,
+        vx: 0, vy: 0,
+        scripted: "fadeout",
+        scriptedElapsed: 0,
+        scriptedLifetime: BLACKHOLE_FADEOUT_LIFETIME,
+        scriptedMass: fadeMass(h.mass),
+        scriptedPos: (_t, hh) => { hh.x = frozenX; hh.y = frozenY; },
+      };
+    });
+  }
   state.lastFrameMs = Date.now();
   state.elapsed = 0;
 }
@@ -184,12 +215,12 @@ export function getBlackholeUniforms(state: BlackHoleState): {
     positions[i * 2 + 1] = 0;
     masses[i]            = 0;
   }
-  return { positions, masses };
+  return state._result;
 }
 
 // ── Scripted effects (derived from blackhole shader) ─────────────────────────
 
-const MISSING_LIFETIME    = 1.3;   // seconds — total hole existence (mass decays to ~0 by end)
+const MISSING_LIFETIME    = 2.0;   // seconds — total hole existence (mass decays to ~0 by end)
 const MISSING_MOTION_TIME = 0.7;   // holes reach end position by this time; then hold while mass fades
 const MISSING_PEAK_MASS   = -2.0;  // strong repel (shader LENS × mass = UV displacement)
 const MISSING_START_X     = 0.48;  // holes start near center, nearly touching
@@ -216,9 +247,9 @@ export function triggerMissing(state: BlackHoleState): void {
     });
   }
   // Mass: fast rise, gentle decay so mass ≈ 0 at splice time (no abrupt cut).
-  // At t=MISSING_LIFETIME (1.3s): |mass| ≈ 2 * e^-4.55 ≈ 0.02.
+  // At t=MISSING_LIFETIME (2.0s): |mass| ≈ 2 * e^-4 ≈ 0.04.
   const massCurve = (t: number) =>
-    MISSING_PEAK_MASS * (1 - Math.exp(-18 * t)) * Math.exp(-3.5 * t);
+    MISSING_PEAK_MASS * (1 - Math.exp(-18 * t)) * Math.exp(-2.0 * t);
   // Position: ease-out cubic over MOTION_TIME; then clamp so holes hold at edge while mass fades.
   const eased = (t: number): number => {
     const u = Math.min(1, t / MISSING_MOTION_TIME);
@@ -310,7 +341,7 @@ export function hasScriptedSharing(state: BlackHoleState): boolean {
 
 // ── Conectar — two patches converge rápidamente into one ─────────────────────
 
-const CONNECT_LIFETIME    = 1.2;   // seconds — total existence (mass fades before splice)
+const CONNECT_LIFETIME    = 2.0;   // seconds — total existence (mass fades before splice)
 const CONNECT_MOTION_TIME = 0.55;  // fast approach; holes lock at center for fade tail
 const CONNECT_PEAK_MASS   = 1.8;   // strong attract
 const CONNECT_START_X     = 0.15;  // far apart
@@ -328,7 +359,7 @@ export function triggerConnect(state: BlackHoleState): void {
     });
   }
   const massCurve = (t: number) =>
-    CONNECT_PEAK_MASS * (1 - Math.exp(-14 * t)) * Math.exp(-2.2 * t);
+    CONNECT_PEAK_MASS * (1 - Math.exp(-14 * t)) * Math.exp(-1.4 * t);
   // ease-in-out cubic — smooth accelerate + decelerate for clean merge
   const eased = (t: number): number => {
     const u = Math.min(1, t / CONNECT_MOTION_TIME);

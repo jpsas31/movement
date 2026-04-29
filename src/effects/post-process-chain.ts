@@ -23,7 +23,6 @@ const CHAIN_CANVAS_ID = "movement-postprocess-chain";
 const HEARTBEAT_MAX   = 8;
 const HEARTBEAT_SCALE = 0.13;
 export const BH_MAX   = 4; // must match MAX_BH in blackhole.ts
-export const TRISTEZA_MAX = 16; // must match MAX_DROPS in tristeza.ts
 
 // ─── Shared vertex shader ────────────────────────────────────────────────────
 const VS = /* glsl */ `
@@ -317,176 +316,6 @@ const FS_FELICIDAD = /* glsl */ `
   }
 `;
 
-// ─── Tristeza (water drops — Heartfelt-style height field) ───────────────────
-// Adapted from BigWings "Heartfelt" (Shadertoy ltffzl): build a continuous
-// height field from all active drops, take its 2D gradient as a refractive
-// normal, and offset the texture sample by that normal. Drops with overlapping
-// influence merge naturally (no popping when they meet) and the lens distortion
-// reads as physically smooth instead of a stamped-on circle.
-//
-// Per-pixel cost: 3 evaluations of the drop loop (center + 2 neighbours) for
-// finite-difference normals. Each drop has a tight cull rect so most pixels
-// touch zero drops.
-const FS_TRISTEZA = /* glsl */ `
-  precision highp float;
-  uniform sampler2D uTex;
-  uniform vec2  uDropPos[${TRISTEZA_MAX}];
-  uniform float uDropAge[${TRISTEZA_MAX}];
-  uniform float uDropSeed[${TRISTEZA_MAX}];
-  uniform float uTime;
-  varying vec2 vUv;
-
-  const float LIFETIME = 4.5;
-  const float R_PEAK   = 0.028;  // peak bead size (small)
-  const float R_IMPACT = 0.008;  // initial bead size at impact
-
-  // Hash + FBM for per-drop irregular silhouette domain-warping.
-  float hash12(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
-  }
-  float vnoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float a = hash12(i);
-    float b = hash12(i + vec2(1.0, 0.0));
-    float c = hash12(i + vec2(0.0, 1.0));
-    float d = hash12(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-  }
-  float fbm(vec2 p) {
-    return 0.55 * vnoise(p)
-         + 0.30 * vnoise(p * 2.13 + vec2(5.7, -3.1))
-         + 0.15 * vnoise(p * 4.27 + vec2(-1.3, 7.9));
-  }
-
-  // Spherical-bead height contribution at sample point p, summed over drops.
-  // Each main drop also spawns 4 tiny satellite beads at hashed offsets so the
-  // glass population has multiple sizes (real wet glass = lots of small beads
-  // around each big one).
-  float dropHeight(vec2 p) {
-    float h = 0.0;
-    for (int i = 0; i < ${TRISTEZA_MAX}; i++) {
-      float age = uDropAge[i];
-      if (age < 0.0) continue;
-      vec2 dMain = p - uDropPos[i];
-      if (abs(dMain.x) > 0.14 || abs(dMain.y) > 0.14) continue;
-
-      float seed    = uDropSeed[i];
-      float scale   = mix(0.50, 1.00, fract(seed * 7.13));
-      float aspect  = mix(0.75, 1.00, fract(seed * 11.71));
-      float fadeS   = 0.55 + 0.30 * fract(seed * 5.39);
-      float lifeMul = 0.65 + 0.65 * fract(seed * 3.17);
-      float lifeT   = LIFETIME * lifeMul;
-
-      float t = age / lifeT;
-      if (t > 1.0) continue;
-
-      // R-curve: tiny impact → brief grow to peak (~8% of life) → continuous shrink to 0.
-      // Drift therefore comes paired with visible shrinkage — drops evaporate as they slide.
-      float grow   = smoothstep(0.0, 0.08, t);
-      float shrink = 1.0 - smoothstep(0.10, 1.0, t);
-      float R = (R_IMPACT + (R_PEAK - R_IMPACT) * grow) * shrink * scale;
-      if (R < 0.0015) continue;
-      // Opacity is just an entry fade-in now; shrink handles the disappearance.
-      // fadeS still nudges a small late-opacity decline so the very end fades faster than it would
-      // from R alone — gives a softer hand-off to invisibility.
-      float opacity = smoothstep(0.0, 0.04, t) * (1.0 - smoothstep(fadeS, 1.0, t) * 0.6);
-
-      // ── Main bead ──────────────────────────────────────────────────────────
-      // Time-varying warp seed → silhouette continuously morphs as the drop
-      // drifts (lumps shift, edge breathes) instead of staying frozen.
-      vec2 dn     = dMain / R;
-      vec2 warpIn = dn * 1.4 + vec2(seed * 31.0 + age * 0.55, seed * 71.0 - age * 0.40);
-      vec2 warp   = vec2(fbm(warpIn), fbm(warpIn + vec2(17.3, -9.1))) - 0.5;
-      vec2 dShape = vec2(dMain.x, dMain.y / aspect) + warp * R * 0.55;
-      float rnMain = length(dShape) / R;
-      if (rnMain < 1.0) {
-        float z = sqrt(1.0 - rnMain * rnMain);
-        float ringPhase = rnMain * 9.0 - age * 14.0;
-        float ringDecay = exp(-age * 3.0) * exp(-rnMain * 2.8);
-        float ring = sin(ringPhase) * ringDecay * 0.20;
-        h += (z + ring) * opacity * R;
-      }
-
-      // ── Satellite beads — drift outward from main, evaporate independently ─
-      for (int s = 0; s < 4; s++) {
-        float fs = float(s) + 1.0;
-        // Per-satellite delayed birth so they don't all pop in at once.
-        float satAge = age - 0.08 * fs;
-        if (satAge < 0.0 || satAge > lifeT) continue;
-
-        float oa        = fract(seed * 17.31 + fs * 4.7) * 6.2832;
-        float odBase    = 0.4 + 0.4 * fract(seed * 23.71 + fs * 7.1);
-        float driftRate = 0.18 + 0.10 * fract(seed * 31.7 + fs * 13.3);
-        // Distance from main grows with the satellite's own age — radiates outward.
-        float od = (odBase + satAge * driftRate) * R;
-
-        // Lateral wobble — satellite path isn't a perfect radial line.
-        float wobble = sin(satAge * 3.0 + fs * 2.0) * 0.06;
-        vec2  satDir = vec2(cos(oa + wobble), sin(oa + wobble));
-        vec2  satOff = satDir * od;
-
-        // Satellite shrinks/evaporates in last 35% of its life — fully gone before main expires.
-        float satFade  = 1.0 - smoothstep(lifeT * 0.65, lifeT, satAge);
-        float satR     = R * (0.18 + 0.18 * fract(seed * 41.7 + fs * 11.3)) * satFade;
-        if (satR < 0.001) continue;
-
-        vec2  dSat   = dMain - satOff;
-        float satDist = length(dSat);
-        if (satDist > satR) continue;
-        float rnSat   = satDist / satR;
-        float satZ    = sqrt(1.0 - rnSat * rnSat);
-        // Independent opacity — satellites have their own appear / fade arc.
-        float satOpacity = smoothstep(0.0, 0.04, satAge) * satFade;
-        h += satZ * satOpacity * satR * 0.85;
-      }
-    }
-    return h;
-  }
-
-  void main() {
-    // ── Sample height field at center + two neighbours → finite-difference normal ─
-    float e = 0.0015;
-    float h0 = dropHeight(vUv);
-    float hx = dropHeight(vUv + vec2(e, 0.0));
-    float hy = dropHeight(vUv + vec2(0.0, e));
-    vec2  n  = vec2(hx - h0, hy - h0);
-
-    // ── Refraction: shift sample by the gradient ──────────────────────────────
-    // Stronger multiplier so drops actually act as visible lenses, not subtle
-    // smudges. Outside any drop n ≈ 0 → free passthrough.
-    vec2  sUv = clamp(vUv - n * 32.0, 0.0, 1.0);
-
-    // Gradient-magnitude-driven chromatic aberration → wet-glass colour fringe.
-    float gradMag = length(n);
-    float ca      = clamp(gradMag * 18.0, 0.0, 0.006);
-    vec3 base;
-    base.r = texture2D(uTex, clamp(sUv + vec2(ca, 0.0), 0.0, 1.0)).r;
-    base.g = texture2D(uTex, sUv).g;
-    base.b = texture2D(uTex, clamp(sUv - vec2(ca, 0.0), 0.0, 1.0)).b;
-
-    // ── Rim highlight from gradient magnitude — Fresnel-style edge specular ──
-    // Tightened smoothstep window → cleaner thin highlight along the bead edge.
-    float rim = smoothstep(0.0010, 0.0030, gradMag);
-    base += vec3(0.85, 0.92, 1.00) * rim * 0.55;
-
-    // ── Apex catchlight — bright pinpoint on the high points of the height field
-    float apex = smoothstep(0.012, 0.025, h0);
-    base += vec3(1.0) * apex * 0.25;
-
-    // ── Slight Fresnel darken inside drops at grazing angles ─────────────────
-    // Where gradient is moderate (not at apex, not at empty): a touch of dimming
-    // adds depth so the drop body reads as glass rather than pure refraction.
-    float fres = smoothstep(0.0005, 0.002, gradMag) * (1.0 - rim);
-    base *= 1.0 - fres * 0.10;
-
-    gl_FragColor = vec4(base, 1.0);
-  }
-`;
-
 // ─── Output blit ─────────────────────────────────────────────────────────────
 // Final pass — copies the latest result to the canvas. Always runs.
 const FS_OUTPUT = /* glsl */ `
@@ -517,7 +346,6 @@ export class PostProcessChain {
   private readonly progBlackhole:  WebGLProgram;
   private readonly progSea:        WebGLProgram;
   private readonly progFelicidad:  WebGLProgram;
-  private readonly progTristeza:   WebGLProgram;
   private readonly progOutput:     WebGLProgram;
 
   /** Butterchurn canvas upload target — sole cross-context readback per frame. */
@@ -537,10 +365,6 @@ export class PostProcessChain {
   private readonly uSeaAmp:          WebGLUniformLocation;
   private readonly uFelTime:         WebGLUniformLocation;
   private readonly uFelAmp:          WebGLUniformLocation;
-  private readonly uDropPos:         WebGLUniformLocation;
-  private readonly uDropAge:         WebGLUniformLocation;
-  private readonly uDropSeed:        WebGLUniformLocation;
-  private readonly uDropTime:        WebGLUniformLocation;
 
   constructor() {
     document.getElementById(CHAIN_CANVAS_ID)?.remove();
@@ -578,11 +402,10 @@ export class PostProcessChain {
     this.progBlackhole = this.buildProgram(VS, FS_BLACKHOLE);
     this.progSea       = this.buildProgram(VS, FS_SEA);
     this.progFelicidad = this.buildProgram(VS, FS_FELICIDAD);
-    this.progTristeza  = this.buildProgram(VS, FS_TRISTEZA);
     this.progOutput    = this.buildProgram(VS, FS_OUTPUT);
 
     // Wire texture unit 0 in each program.
-    for (const prog of [this.progRipple, this.progSpiral, this.progHeartbeat, this.progBlackhole, this.progSea, this.progFelicidad, this.progTristeza, this.progOutput]) {
+    for (const prog of [this.progRipple, this.progSpiral, this.progHeartbeat, this.progBlackhole, this.progSea, this.progFelicidad, this.progOutput]) {
       gl.useProgram(prog);
       const loc = gl.getUniformLocation(prog, "uTex");
       if (loc !== null) gl.uniform1i(loc, 0);
@@ -618,12 +441,6 @@ export class PostProcessChain {
     gl.useProgram(this.progFelicidad);
     this.uFelTime = gl.getUniformLocation(this.progFelicidad, "uTime")!;
     this.uFelAmp  = gl.getUniformLocation(this.progFelicidad, "uAmp")!;
-
-    gl.useProgram(this.progTristeza);
-    this.uDropPos  = gl.getUniformLocation(this.progTristeza, "uDropPos[0]")!;
-    this.uDropAge  = gl.getUniformLocation(this.progTristeza, "uDropAge[0]")!;
-    this.uDropSeed = gl.getUniformLocation(this.progTristeza, "uDropSeed[0]")!;
-    this.uDropTime = gl.getUniformLocation(this.progTristeza, "uTime")!;
   }
 
   /** sw/sh = viewport pixel dimensions. FBOs and canvas all match. */
@@ -656,12 +473,12 @@ export class PostProcessChain {
    * @param seaAmp        — sea effect amplitude (0 = skip pass)
    * @param felTime       — elapsed seconds driving felicidad hue+brightness wave
    * @param felAmp        — felicidad envelope (0 = skip pass)
-   * @param dropPositions — flat [x0,y0,…] length = TRISTEZA_MAX×2
-   * @param dropAges      — [a0,a1,…] length = TRISTEZA_MAX; -1 = inactive slot
-   * @param dropSeeds     — [s0,s1,…] in [0,1); per-drop hashed appearance variation
-   * @param dropTime      — elapsed seconds driving liquid flow refraction
    * @param spiralZoom    — spiral zoom factor (1 = none; >1 = zoom in)
    */
+  /** Returns true if the chain ran any pass + drew to the display canvas;
+   *  false if no pass is active and the chain was bypassed entirely. The caller
+   *  uses the return value to decide whether to show the chain's output canvas
+   *  or fall back to displaying the butterchurn source canvas directly. */
   render(
     source: HTMLCanvasElement,
     rippleAges: Float32Array,
@@ -675,12 +492,32 @@ export class PostProcessChain {
     seaAmp: number,
     felTime: number,
     felAmp: number,
-    dropPositions: Float32Array,
-    dropAges: Float32Array,
-    dropSeeds: Float32Array,
-    dropTime: number,
-  ): void {
-    if (!this.fboA || !this.fboB) return;
+  ): boolean {
+    if (!this.fboA || !this.fboB) return false;
+
+    // ── Activity probe: skip ALL gl work when nothing wants to render ─────────
+    // The texImage2D upload + final blit alone cost ~3 ms at full DPR; bypass
+    // when no effect is on lets the butterchurn canvas be shown directly.
+    let anyActive = false;
+    if (spiralStrength > 0.0001 || spiralZoom > 0) anyActive = true;
+    if (!anyActive && (seaAmp > 0.001 || felAmp > 0.001)) anyActive = true;
+    if (!anyActive) {
+      for (let i = 0; i < rippleAges.length; i++) {
+        if (rippleAges[i] >= 0) { anyActive = true; break; }
+      }
+    }
+    if (!anyActive) {
+      for (let i = 0; i < heartbeatAmps.length; i++) {
+        if (heartbeatAmps[i] > 0.0001) { anyActive = true; break; }
+      }
+    }
+    if (!anyActive) {
+      for (let i = 0; i < bhMasses.length; i++) {
+        if (Math.abs(bhMasses[i]) > 0.0001) { anyActive = true; break; }
+      }
+    }
+    if (!anyActive) return false;
+
     const gl = this.gl;
 
     gl.activeTexture(gl.TEXTURE0);
@@ -790,31 +627,13 @@ export class PostProcessChain {
       nextFbo ^= 1;
     }
 
-    // ── Tristeza (ink drops) ──────────────────────────────────────────────────
-    let tristezaActive = false;
-    for (let i = 0; i < dropAges.length; i++) {
-      if (dropAges[i] >= 0) { tristezaActive = true; break; }
-    }
-    if (tristezaActive) {
-      const target = nextFbo === 0 ? this.fboA : this.fboB;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
-      gl.useProgram(this.progTristeza);
-      gl.bindTexture(gl.TEXTURE_2D, cur);
-      gl.uniform2fv(this.uDropPos,  dropPositions);
-      gl.uniform1fv(this.uDropAge,  dropAges);
-      gl.uniform1fv(this.uDropSeed, dropSeeds);
-      gl.uniform1f(this.uDropTime,  dropTime);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      cur = target.tex;
-      nextFbo ^= 1;
-    }
-
     // ── Output blit — always runs, simple copy of cur to canvas ───────────────
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.useProgram(this.progOutput);
     gl.bindTexture(gl.TEXTURE_2D, cur);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    return true;
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────

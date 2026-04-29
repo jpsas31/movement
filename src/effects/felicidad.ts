@@ -19,10 +19,11 @@ export type FelicidadState = {
   envelope: number;     // 0..1 smoothed on/off envelope
   elapsed: number;      // seconds since creation, drives wave phase
   lastFrameMs: number;
+  _result: { time: number; amp: number };
 };
 
 export function createFelicidadState(): FelicidadState {
-  return { active: false, envelope: 0, elapsed: 0, lastFrameMs: Date.now() };
+  return { active: false, envelope: 0, elapsed: 0, lastFrameMs: Date.now(), _result: { time: 0, amp: 0 } };
 }
 
 export function toggleFelicidad(state: FelicidadState): void {
@@ -43,7 +44,9 @@ export function updateFelicidad(state: FelicidadState): { time: number; amp: num
   if (state.envelope < target)      state.envelope = Math.min(target, state.envelope + step);
   else if (state.envelope > target) state.envelope = Math.max(target, state.envelope - step);
 
-  return { time: state.elapsed, amp: state.envelope };
+  state._result.time = state.elapsed;
+  state._result.amp = state.envelope;
+  return state._result;
 }
 
 export function isFelicidadIdle(state: FelicidadState): boolean {
