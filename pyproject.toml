@@ -17,8 +17,21 @@ dependencies = [
     "soundfile>=0.12.1",
     "uvicorn[standard]>=0.42.0",
     "vosk>=0.3.42",
-    "webrtcvad>=2.0.10",
+    # webrtcvad-wheels provides the `webrtcvad` Python module via prebuilt
+    # wheels (cp312 win_amd64 included). Replaces the upstream `webrtcvad`
+    # source-only sdist that needs MSVC build tools to compile on Windows.
+    # Resemblyzer's metadata still names plain `webrtcvad` as a dep — see
+    # the [tool.uv] override below that drops that requirement so resolution
+    # uses webrtcvad-wheels exclusively.
+    "webrtcvad-wheels>=2.0.14",
 ]
 
 [dependency-groups]
 dev = ["ruff"]
+
+[tool.uv]
+# Drop the upstream `webrtcvad` requirement (currently pulled in by
+# Resemblyzer 0.1.4). The same `webrtcvad` Python module is provided by
+# `webrtcvad-wheels` listed above, which ships prebuilt wheels — so Windows
+# users don't need MSVC Build Tools to `uv sync`.
+override-dependencies = ["webrtcvad ; sys_platform == 'never'"]
