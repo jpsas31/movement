@@ -158,7 +158,18 @@ function resize() {
     });
   }
 }
-window.addEventListener("resize", resize);
+// scheduleResize coalesces multiple resize triggers (window drag, toggle Q,
+// preset load) into one rAF tick so FBO destroy/recreate isn't repeated mid-frame.
+let _resizePending = false;
+function scheduleResize() {
+  if (_resizePending) return;
+  _resizePending = true;
+  requestAnimationFrame(() => {
+    _resizePending = false;
+    resize();
+  });
+}
+window.addEventListener("resize", scheduleResize);
 resize();
 
 // --- UI overlay ---
@@ -296,11 +307,19 @@ async function start() {
   loadPreset(0);
 
   let autoCycle = false;
-  const _cycleInterval = setInterval(() => {
-    if (!autoCycle) return;
-    idx = (idx + 1) % presetKeys.length;
-    loadPreset(2.0);
-  }, CYCLE_INTERVAL_MS);
+  let cycleInterval: ReturnType<typeof setInterval> | null = null;
+  function setAutoCycle(on: boolean) {
+    autoCycle = on;
+    if (on && cycleInterval === null) {
+      cycleInterval = setInterval(() => {
+        idx = (idx + 1) % presetKeys.length;
+        loadPreset(2.0);
+      }, CYCLE_INTERVAL_MS);
+    } else if (!on && cycleInterval !== null) {
+      clearInterval(cycleInterval);
+      cycleInterval = null;
+    }
+  }
 
   const videoInjector = new VideoFrameInjector();
 
@@ -394,7 +413,7 @@ async function start() {
         label: "Auto-cycle",
         shortcut: "R",
         getValue: () => (autoCycle ? "on" : "off"),
-        onToggle: () => { autoCycle = !autoCycle; },
+        onToggle: () => setAutoCycle(!autoCycle),
       },
       {
         label: "Spiral",
@@ -508,7 +527,7 @@ async function start() {
         getValue: () => (lowRes ? "on" : "off"),
         onToggle: () => {
           lowRes = !lowRes;
-          resize();
+          scheduleResize();
         },
       },
       {
@@ -826,7 +845,7 @@ async function start() {
       return;
     }
     if (e.key === "r") {
-      autoCycle = !autoCycle;
+      setAutoCycle(!autoCycle);
       console.log("[butterchurn] auto-cycle:", autoCycle ? "on" : "off");
     } else if (e.key === "n") {
       idx = (idx + 1) % presetKeys.length;
@@ -836,7 +855,7 @@ async function start() {
       loadPreset(1.5);
     } else if (e.key === "q") {
       lowRes = !lowRes;
-      resize();
+      scheduleResize();
       console.log("[butterchurn] low-res:", lowRes ? "on" : "off");
     }
   });

@@ -68,12 +68,15 @@ export async function createAudioAnalyserRig(options?: {
   onTrigger?: (trigger: string) => void;
 }): Promise<AudioAnalyserRig> {
   const logPrefix = options?.logPrefix ?? "[audio]";
-  // Pin AudioContext to 16 kHz so the WS audio path (worklet -> backend) hits
-  // exactly the sample rate silero-vad / Resemblyzer / DTW templates expect.
-  // The default rate is system-dependent (44.1, 48, or 96 kHz) — fixed here so
-  // a hardcoded downsample ratio in audio-processor.ts isn't needed.
-  const audioCtx = new AudioContext({ sampleRate: 16000 });
-  console.log(logPrefix, "AudioContext sampleRate:", audioCtx.sampleRate);
+  // Two AudioContexts:
+  //   audioCtx (default rate, usually 48 kHz) drives butterchurn's analyser and
+  //     speaker playback. Default rate keeps full freq range (Nyquist 24 kHz)
+  //     for visual reactivity.
+  //   wsCtx (16 kHz, mic-only) feeds the WS audio worklet. Pinned so the worklet
+  //     can ship int16 chunks without an in-worklet downsample step.
+  const audioCtx = new AudioContext();
+  const wsCtx = new AudioContext({ sampleRate: 16000 });
+  console.log(logPrefix, "AudioContext rates: viz=", audioCtx.sampleRate, "ws=", wsCtx.sampleRate);
   const analyser = audioCtx.createAnalyser();
   analyser.fftSize = 512;
   const inputGain = audioCtx.createGain();
@@ -84,6 +87,8 @@ export async function createAudioAnalyserRig(options?: {
   let currentSource: AudioNode;
   let currentCleanup: () => void;
   let currentWsAudioWorklet: AudioWorkletNode | null = null;
+  let wsMicSource: MediaStreamAudioSourceNode | null = null;
+  let wsMicConnected = false;
   let ws: WebSocket | null = null;
   let destinationConnected = false;
   let voiceEnabled = false;
@@ -93,10 +98,14 @@ export async function createAudioAnalyserRig(options?: {
   currentSource.connect(inputGain);
   currentCleanup = () => micStream.getTracks().forEach((t) => t.stop());
   void audioCtx.resume();
+  void wsCtx.resume();
 
-  await audioCtx.audioWorklet.addModule(new URL("audio-processor.ts", import.meta.url));
-  currentWsAudioWorklet = new AudioWorkletNode(audioCtx, "ws-audio-processor");
-  inputGain.connect(currentWsAudioWorklet);
+  await wsCtx.audioWorklet.addModule(new URL("audio-processor.ts", import.meta.url));
+  currentWsAudioWorklet = new AudioWorkletNode(wsCtx, "ws-audio-processor");
+  // Mic feed for the WS path lives on wsCtx so its sample rate is exactly
+  // 16 kHz. We connect/disconnect from the worklet on voice toggle to keep
+  // the audio thread idle when the user has voice off.
+  wsMicSource = wsCtx.createMediaStreamSource(micStream);
   const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${wsProto}//${window.location.host}/ws`);
   // ~256 KB ≈ 4 s of int16 16 kHz audio queued in the WS send buffer; past
@@ -154,6 +163,18 @@ export async function createAudioAnalyserRig(options?: {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         newSource = audioCtx.createMediaStreamSource(stream);
         newCleanup = () => stream.getTracks().forEach((t) => t.stop());
+        // Rebuild the wsCtx mic source on top of the same stream so the WS
+        // worklet keeps producing 16 kHz chunks after a file -> mic switch.
+        if (wsMicSource) {
+          try { wsMicSource.disconnect(); } catch { /* not connected */ }
+        }
+        wsMicSource = wsCtx.createMediaStreamSource(stream);
+        if (voiceEnabled && currentWsAudioWorklet) {
+          wsMicSource.connect(currentWsAudioWorklet);
+          wsMicConnected = true;
+        } else {
+          wsMicConnected = false;
+        }
         // Stop routing file audio to speakers
         if (destinationConnected) {
           inputGain.disconnect(audioCtx.destination);
@@ -175,6 +196,12 @@ export async function createAudioAnalyserRig(options?: {
         } catch (err) {
           URL.revokeObjectURL(url);
           throw err;
+        }
+        // File mode: detach the WS mic feed — file audio isn't sent to the
+        // recognizer (and we don't have a separate file source on wsCtx).
+        if (wsMicConnected && wsMicSource && currentWsAudioWorklet) {
+          try { wsMicSource.disconnect(currentWsAudioWorklet); } catch { /* idempotent */ }
+          wsMicConnected = false;
         }
         // Route file audio to speakers so the user can hear it
         if (!destinationConnected) {
@@ -213,7 +240,18 @@ export async function createAudioAnalyserRig(options?: {
     isVoiceEnabled: () => voiceEnabled,
     setVoiceEnabled: (on: boolean) => {
       voiceEnabled = on;
-      console.log(logPrefix, "voice mode:", on ? "on" : "off");
+      // Connect/disconnect the wsCtx mic source from the worklet so the audio
+      // thread is idle when voice is off — no chunk processing, no port.postMessage.
+      if (wsMicSource && currentWsAudioWorklet) {
+        if (on && !wsMicConnected && inputKind === "mic") {
+          wsMicSource.connect(currentWsAudioWorklet);
+          wsMicConnected = true;
+        } else if (!on && wsMicConnected) {
+          try { wsMicSource.disconnect(currentWsAudioWorklet); } catch { /* idempotent */ }
+          wsMicConnected = false;
+        }
+      }
+      console.log(logPrefix, "voice mode:", on ? "on" : "off", "wsMicConnected=", wsMicConnected);
     },
   };
 }
