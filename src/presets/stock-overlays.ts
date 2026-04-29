@@ -74,17 +74,18 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
       // sustained audio doesn't normalize away — *_att adapts toward 1.0
       // over ~seconds, killing reactivity in long sections.
       var _en = (a.bass + a.mid + a.treb) * 0.5;
-      // Idle 5% (very slow), quiet voice ~25%, loud voice ~65%, beats ~95%.
-      // Wide contrast so silence reads stillness and voices clearly accelerate.
-      var _motion = Math.min(1, 0.05 + 0.60*_en);
+      // Audio gate — fully off at silence, fully on once en > ~0.15.
+      // Drives zoom + warp + warpanimspeed + wave alpha so silence is
+      // genuinely still (no feedback motion, no warp animation, no waveform).
+      var _gate = Math.min(1, _en * 6.0);
+      var _motion = _gate * Math.min(1, 0.10 + 0.65*_en);
       a.zoom = 1 + (a.zoom - 1)*_motion;
       a.warp = a.warp*_motion;
-      a.zoom = a.zoom + 0.06*a.bass;
-      a.warp = a.warp + 0.6*a.mid;
-      // Subtle waveform / spirograph overlay — visible but not dominant.
-      // Idle ~6% alpha, beats peak ~30%, so the palette stays the focus
-      // and the mesh adds motion accent on audio.
-      a.wave_a = Math.min(0.35, 0.06 + 0.18*(a.bass + a.treb)*0.5);
+      a.warpanimspeed = 0.3*_gate;
+      a.zoom = a.zoom + 0.06*a.bass*_gate;
+      a.warp = a.warp + 0.6*a.mid*_gate;
+      // Wave alpha — gated so silence shows zero wave.
+      a.wave_a = _gate * Math.min(0.35, 0.06 + 0.18*(a.bass + a.treb)*0.5);
     `,
     compReplace: [
       // Inject _palette decl. Quadrant-based with narrow smoothstep transition
