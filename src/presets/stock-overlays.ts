@@ -46,7 +46,7 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
     `,
   },
 
-  // 4-color palette cycle: pink → light-blue → lilac → mint, ~26 s full cycle.
+  // 4-color palette cycle: pink → lilac → mint → light-blue, ~26 s full cycle.
   // Audio reactivity:
   //   - idle (silent / quiet) → motion damped (zoom + warp + warpanimspeed scaled down)
   //   - peaks above baseline → bass pumps zoom, mid pumps warp, (bass+treb)
@@ -67,9 +67,10 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
       a.zoom = 1 + (a.zoom - 1)*_motion;
       a.warp = a.warp*_motion;
       a.q1 = a.time*0.15 - Math.floor(a.time*0.15/4)*4;
-      a.wave_r = a.q1<1 ? 1.00 : (a.q1<2 ? 0.55 : (a.q1<3 ? 0.78 : 0.55));
-      a.wave_g = a.q1<1 ? 0.45 : (a.q1<2 ? 0.85 : (a.q1<3 ? 0.55 : 1.00));
-      a.wave_b = a.q1<1 ? 0.75 : (a.q1<2 ? 1.00 : (a.q1<3 ? 1.00 : 0.78));
+      // pink (1.00,0.45,0.75) | lilac (0.78,0.55,1.00) | mint (0.55,1.00,0.78) | light-blue (0.55,0.85,1.00)
+      a.wave_r = a.q1<1 ? 1.00 : (a.q1<2 ? 0.78 : (a.q1<3 ? 0.55 : 0.55));
+      a.wave_g = a.q1<1 ? 0.45 : (a.q1<2 ? 0.55 : (a.q1<3 ? 1.00 : 0.85));
+      a.wave_b = a.q1<1 ? 0.75 : (a.q1<2 ? 1.00 : (a.q1<3 ? 0.78 : 1.00));
       a.zoom = a.zoom + 0.025*Math.max(0, a.bass_att - 1.0);
       a.warp = a.warp + 0.25*Math.max(0, a.mid_att - 1.0);
       a.wave_a = Math.min(1, (a.wave_a !== undefined ? a.wave_a : 0.5) + 0.4*Math.max(0, (a.bass_att + a.treb_att)*0.5 - 1.0));
