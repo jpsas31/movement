@@ -55,27 +55,50 @@ if errorlevel 1 (
 )
 
 REM --- Auto-update from origin/main (destructive, main-only) --------------
+REM   If .git missing (e.g. extracted from GitHub ZIP), bootstrap by init +
+REM   remote add + fetch + reset --hard origin/main. Converts a ZIP-extracted
+REM   directory into a tracked clone in place. Subsequent runs auto-update.
+set "MOVEMENT_REPO_URL=https://github.com/jpsas31/movement.git"
 git rev-parse --is-inside-work-tree >nul 2>&1
-if not errorlevel 1 (
-  for /f "delims=" %%B in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "CUR_BRANCH=%%B"
-  if /I "!CUR_BRANCH!"=="main" (
-    echo [update] Fetching origin/main...
-    git fetch origin main
-    if errorlevel 1 (
-      echo [WARN]  git fetch failed ^(offline?^). Continuing with local copy.
-    ) else (
-      echo [update] Resetting working tree to origin/main ^(destructive^)...
-      git reset --hard origin/main
-      if errorlevel 1 (
-        echo [WARN]  git reset failed. Continuing with local copy.
-      )
-    )
+if errorlevel 1 (
+  echo [update] No .git found ^(ZIP install?^). Bootstrapping clone in place...
+  git init -b main
+  if errorlevel 1 (
+    echo [WARN]  git init failed. Skipping auto-update.
+    goto :after_update
+  )
+  git remote add origin "%MOVEMENT_REPO_URL%" >nul 2>&1
+  git fetch origin main
+  if errorlevel 1 (
+    echo [WARN]  git fetch failed ^(offline?^). Skipping auto-update.
+    goto :after_update
+  )
+  echo [update] Resetting working tree to origin/main ^(destructive^)...
+  git reset --hard origin/main
+  if errorlevel 1 (
+    echo [WARN]  git reset failed. Continuing with local copy.
+    goto :after_update
+  )
+  git branch --set-upstream-to=origin/main main >nul 2>&1
+  goto :after_update
+)
+for /f "delims=" %%B in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "CUR_BRANCH=%%B"
+if /I "!CUR_BRANCH!"=="main" (
+  echo [update] Fetching origin/main...
+  git fetch origin main
+  if errorlevel 1 (
+    echo [WARN]  git fetch failed ^(offline?^). Continuing with local copy.
   ) else (
-    echo [update] On branch '!CUR_BRANCH!' ^(not main^). Skipping auto-update.
+    echo [update] Resetting working tree to origin/main ^(destructive^)...
+    git reset --hard origin/main
+    if errorlevel 1 (
+      echo [WARN]  git reset failed. Continuing with local copy.
+    )
   )
 ) else (
-  echo [update] Not a git repo. Skipping auto-update.
+  echo [update] On branch '!CUR_BRANCH!' ^(not main^). Skipping auto-update.
 )
+:after_update
 
 where node >nul 2>&1
 if errorlevel 1 (
