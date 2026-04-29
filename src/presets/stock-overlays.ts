@@ -26,6 +26,9 @@ export type StockOverlay = {
   baseValsSet?: Partial<Record<string, number>>;
   frameAppend?: string;
   pixelAppend?: string;
+  /** Exact-string replacements applied to `comp` (final composite GLSL). Used to
+   *  swap hardcoded color vectors for q-driven palette uniforms. */
+  compReplace?: ReadonlyArray<readonly [string, string]>;
 };
 
 export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
@@ -71,10 +74,24 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
       a.wave_r = a.q1<1 ? 1.00 : (a.q1<2 ? 0.78 : (a.q1<3 ? 0.55 : 0.55));
       a.wave_g = a.q1<1 ? 0.45 : (a.q1<2 ? 0.55 : (a.q1<3 ? 1.00 : 0.85));
       a.wave_b = a.q1<1 ? 0.75 : (a.q1<2 ? 1.00 : (a.q1<3 ? 0.78 : 1.00));
+      // q15-q17 piped to comp shader via compReplace below — drives the
+      // Sobel-edge tint that the preset uses for its dominant colour. We
+      // re-use a.wave_r/g/b values to keep palette in sync.
+      a.q15 = a.wave_r;
+      a.q16 = a.wave_g;
+      a.q17 = a.wave_b;
       a.zoom = a.zoom + 0.025*Math.max(0, a.bass_att - 1.0);
       a.warp = a.warp + 0.25*Math.max(0, a.mid_att - 1.0);
       a.wave_a = Math.min(1, (a.wave_a !== undefined ? a.wave_a : 0.5) + 0.4*Math.max(0, (a.bass_att + a.treb_att)*0.5 - 1.0));
     `,
+    // shifter's comp shader hardcodes two Sobel-edge tint vectors. Replace
+    // BOTH with our q15/q16/q17 palette uniform so the visible colour cycles
+    // through pink → lilac → mint → light-blue. Magnitudes (4.0 / 2.5)
+    // approximate the original luminance so the preset stays bright.
+    compReplace: [
+      ["vec3(3.4, 2.38, 1.02)", "(vec3(q15, q16, q17) * 4.0)"],
+      ["vec3(0.68, 1.7, 2.38)", "(vec3(q15, q16, q17) * 2.5)"],
+    ],
   },
 };
 
@@ -94,5 +111,19 @@ export function applyStockOverlay(key: string, preset: PresetWithBase): void {
     const p = preset as PresetWithBase & { pixel_eqs_str?: string };
     const prev = typeof p.pixel_eqs_str === "string" ? p.pixel_eqs_str : "";
     p.pixel_eqs_str = prev + "\n" + overlay.pixelAppend.trim() + "\n";
+  }
+  if (overlay.compReplace) {
+    const p = preset as PresetWithBase & { comp?: string };
+    if (typeof p.comp === "string") {
+      let comp = p.comp;
+      for (const [from, to] of overlay.compReplace) {
+        if (!comp.includes(from)) {
+          console.warn(`[stock-overlays] compReplace miss for "${key}": ${from}`);
+          continue;
+        }
+        comp = comp.split(from).join(to);
+      }
+      p.comp = comp;
+    }
   }
 }
