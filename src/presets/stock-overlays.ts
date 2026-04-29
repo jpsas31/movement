@@ -74,7 +74,9 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
       // sustained audio doesn't normalize away — *_att adapts toward 1.0
       // over ~seconds, killing reactivity in long sections.
       var _en = (a.bass + a.mid + a.treb) * 0.5;
-      var _motion = Math.min(1, 0.15 + 0.45*_en);
+      // Idle 5% (very slow), quiet voice ~25%, loud voice ~65%, beats ~95%.
+      // Wide contrast so silence reads stillness and voices clearly accelerate.
+      var _motion = Math.min(1, 0.05 + 0.60*_en);
       a.zoom = 1 + (a.zoom - 1)*_motion;
       a.warp = a.warp*_motion;
       a.zoom = a.zoom + 0.06*a.bass;
