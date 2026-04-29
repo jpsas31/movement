@@ -80,21 +80,24 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
     `,
     compReplace: [
       // Inject _palette decl. Quadrant-based with narrow smoothstep transition
-      // (uv.* in [0.4, 0.6]) so each corner shows its PURE colour over most of
-      // its quadrant — bilinear blend was averaging everything to a muddy mix.
+      // so each corner shows its pure colour over most of its quadrant.
       // TL=pink, TR=lilac, BL=mint, BR=light-blue.
       [
         "tmpvar_3 = (tmpvar_2 * 2.5);",
         "tmpvar_3 = (tmpvar_2 * 2.5);\n  vec2 _t = smoothstep(vec2(0.4), vec2(0.6), uv);\n  vec3 _palette = mix(mix(vec3(1.00,0.45,0.75), vec3(0.78,0.55,1.00), _t.x), mix(vec3(0.55,1.00,0.78), vec3(0.55,0.85,1.00), _t.x), _t.y);",
       ],
-      // Previous-frame feedback tinted by palette. Higher mul (1.6) so colours
-      // accumulate brighter instead of decaying dark.
+      // Replace previous-frame feedback. Every pixel now shows the palette at
+      // a constant 0.55 floor, modulated up by the preset's own luminance.
+      // Without the constant floor the whole shader only painted along Sobel
+      // edges, so the bottom quadrants (mint / light-blue) and any low-edge
+      // regions stayed black — invisible. Dot product extracts grayscale
+      // luminance from the prev frame so motion still drives brightness.
       [
         "(texture (sampler_main, uv).xyz * 0.5)",
-        "(texture (sampler_main, uv).xyz * _palette * 1.6)",
+        "(_palette * (0.55 + dot(texture(sampler_main, uv).xyz, vec3(0.30, 0.59, 0.11)) * 2.0))",
       ],
-      // Sobel edge tints — bumped magnitudes so colours read brighter against
-      // the high-pass differential.
+      // Sobel edge tints — keep edge highlights in the same palette so motion
+      // accents match the corner they appear in.
       ["vec3(3.4, 2.38, 1.02)", "(_palette * 6.0)"],
       ["vec3(0.68, 1.7, 2.38)", "(_palette * 4.0)"],
     ],
