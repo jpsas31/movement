@@ -6,8 +6,9 @@ title Movement - Windows Launcher
 cd /d "%~dp0"
 
 REM --- Flags --------------------------------------------------------------
-REM   --download         permit network download of Vosk model (~1.4 GB) and
-REM                      (template mode only) ESC-50 noise corpus (~600 MB)
+REM   --download         permit network download of the ESC-50 noise corpus
+REM                      (~600 MB) for template/hybrid speaker enrollment.
+REM                      The Vosk model auto-downloads when missing regardless.
 REM   --no-browser       skip auto-opening Chrome at http://localhost:5173
 REM   --recognizer vosk|template|hybrid     (default vosk)
 REM   --vosk             alias of --recognizer vosk
@@ -36,10 +37,11 @@ echo ================================================
 echo   Movement - first-run setup + dev launcher
 echo   Recognizer: %RECOGNIZER%
 echo   Vosk model: %VOSK_MODEL_NAME%
+echo   Vosk model: auto-downloads when missing ^(~1.4 GB big, ~40 MB small^)
 if "%WITH_DOWNLOAD%"=="1" (
-  echo   Download mode: ON  ^(may fetch ~1.4 GB Vosk model + 600 MB noise if template mode^)
+  echo   Noise corpus: ON  ^(template/hybrid will fetch ESC-50 ~600 MB if missing^)
 ) else (
-  echo   Download mode: OFF ^(pass --download to allow network fetch^)
+  echo   Noise corpus: OFF ^(pass --download to enable; only matters for template/hybrid^)
 )
 if "%OPEN_BROWSER%"=="1" (
   echo   Auto-open browser: ON  ^(localhost:5173 in Chrome after server boots^)
@@ -158,13 +160,15 @@ REM ----- Stage Vosk model (needed by all recognizer paths: vosk runs it,
 REM       template/hybrid still use it via build_grammar.py to autobuild
 REM       the trigger map from enrollment audio).
 echo.
-echo [setup] Looking for an existing Vosk model in Downloads ^(%VOSK_MODEL_NAME%^)...
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\find-vosk-in-downloads.ps1" -ModelName %VOSK_MODEL_NAME%
-set "FIND_RESULT=!errorlevel!"
-if "!FIND_RESULT!"=="0" (
-  echo [setup] Vosk model staged from local copy.
+if exist "backend\models\%VOSK_MODEL_NAME%\conf\model.conf" (
+  echo [setup] Vosk model already present at backend\models\%VOSK_MODEL_NAME%
 ) else (
-  if "%WITH_DOWNLOAD%"=="1" (
+  echo [setup] Looking for an existing Vosk model in Downloads ^(%VOSK_MODEL_NAME%^)...
+  powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\find-vosk-in-downloads.ps1" -ModelName %VOSK_MODEL_NAME%
+  set "FIND_RESULT=!errorlevel!"
+  if "!FIND_RESULT!"=="0" (
+    echo [setup] Vosk model staged from local copy.
+  ) else (
     echo [setup] No local Vosk model found. Downloading %VOSK_MODEL_NAME% ^(~1.4 GB for big, ~40 MB for small^)...
     set "VOSK_MODEL_NAME=%VOSK_MODEL_NAME%"
     call npm run setup
@@ -173,12 +177,6 @@ if "!FIND_RESULT!"=="0" (
       pause
       exit /b 1
     )
-  ) else (
-    echo [WARN]  No local Vosk model found and --download not set.
-    echo [WARN]  Re-run with: start-windows.bat --download
-    echo [WARN]  Or place %VOSK_MODEL_NAME%^(.zip^) in your Downloads folder.
-    pause
-    exit /b 1
   )
 )
 
