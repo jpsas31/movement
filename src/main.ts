@@ -621,7 +621,40 @@ async function start() {
 
   const channelTimers = new Map<() => void, ReturnType<typeof setTimeout>>();
 
+  // Trigger queue: backend can burst multiple triggers in tight succession
+  // (long utterance, rapid repeats). Firing all on the same frame stacks GPU
+  // work and looks like chaos. FIFO with hard cap (drop oldest on overflow);
+  // drain at ~60 ms spacing so each effect's first frame lands before the next.
+  const TRIGGER_QUEUE_MAX = 16;
+  const TRIGGER_DRAIN_MS = 60;
+  const triggerQueue: string[] = [];
+  let triggerDraining = false;
+
   function handleSpeechTrigger(trigger: string) {
+    if (!TRIGGERS[trigger]) {
+      console.warn("[trigger] unknown:", trigger);
+      return;
+    }
+    if (triggerQueue.length >= TRIGGER_QUEUE_MAX) {
+      const dropped = triggerQueue.shift();
+      console.warn("[trigger] queue full, dropped oldest:", dropped);
+    }
+    triggerQueue.push(trigger);
+    if (!triggerDraining) drainTriggerQueue();
+  }
+
+  function drainTriggerQueue() {
+    const next = triggerQueue.shift();
+    if (next === undefined) {
+      triggerDraining = false;
+      return;
+    }
+    triggerDraining = true;
+    fireTrigger(next);
+    setTimeout(drainTriggerQueue, TRIGGER_DRAIN_MS);
+  }
+
+  function fireTrigger(trigger: string) {
     const spec = TRIGGERS[trigger];
     if (!spec) return;
     console.log("[trigger]", trigger);

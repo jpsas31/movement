@@ -99,13 +99,27 @@ export async function createAudioAnalyserRig(options?: {
   inputGain.connect(currentWsAudioWorklet);
   const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${wsProto}//${window.location.host}/ws`);
+  // ~256 KB ≈ 4 s of int16 16 kHz audio queued in the WS send buffer; past
+  // this we drop new chunks. Prevents an unbounded outbound queue when the
+  // page is backgrounded or the network briefly stalls.
+  const WS_BACKPRESSURE_BYTES = 256_000;
+  let droppedChunks = 0;
   currentWsAudioWorklet.port.onmessage = (event) => {
-    if (voiceEnabled && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(event.data);
+    if (!voiceEnabled || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (ws.bufferedAmount > WS_BACKPRESSURE_BYTES) {
+      droppedChunks++;
+      if (droppedChunks % 50 === 1) {
+        console.warn(logPrefix, "ws backpressure: dropped", droppedChunks, "audio chunks (buffered=", ws.bufferedAmount, ")");
+      }
+      return;
     }
+    ws.send(event.data);
   };
   ws.addEventListener("message", (event) => {
-    if (typeof event.data !== "string") return;
+    if (typeof event.data !== "string") {
+      console.warn(logPrefix, "non-text ws frame ignored");
+      return;
+    }
     if (!voiceEnabled) return;
     try {
       const msg = JSON.parse(event.data);

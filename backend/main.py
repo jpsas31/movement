@@ -106,6 +106,10 @@ def _merge_observed_grammar() -> None:
 
 MAX_PHRASE_LEN = max(len(p[0]) for p in TRIGGERS)
 DEBOUNCE_SECONDS = 2.0
+# Hard cap on a single WS audio frame. The frontend worklet ships 3200-byte
+# chunks (1600 samples @ int16 16 kHz, ~100 ms). 65 KB ≈ 2 s of audio — anything
+# larger is a misbehaving client and wastes Kaldi CPU.
+MAX_WS_FRAME_BYTES = 65_536
 _merge_observed_grammar()
 
 app = FastAPI()
@@ -190,7 +194,12 @@ def _match_trigger_at_tail(tokens: list[str]) -> str | None:
 
 
 async def _vosk_loop(websocket: WebSocket, emit) -> None:
-    """Trigger only on Vosk's own endpointer (AcceptWaveform=True)."""
+    """Trigger only on Vosk's own endpointer (AcceptWaveform=True).
+
+    AcceptWaveform/Result are CPU-bound and would otherwise block the asyncio
+    event loop, starving other WS connections; running them in a worker thread
+    keeps the loop responsive.
+    """
     from vosk import KaldiRecognizer
     rec = KaldiRecognizer(_vosk_model, SAMPLE_RATE, GRAMMAR_JSON)
     final_tokens: deque[str] = deque(maxlen=MAX_PHRASE_LEN)
@@ -198,13 +207,17 @@ async def _vosk_loop(websocket: WebSocket, emit) -> None:
 
     while True:
         data = await websocket.receive_bytes()
+        if len(data) > MAX_WS_FRAME_BYTES:
+            logger.warning("vosk: dropping oversize frame (%d bytes)", len(data))
+            continue
         bytes_seen += len(data)
         if bytes_seen >= SAMPLE_RATE * 2 * 2:
             logger.info("vosk: heartbeat (%.1f s audio received)", bytes_seen / (SAMPLE_RATE * 2))
             bytes_seen = 0
 
-        if rec.AcceptWaveform(data):
-            text = json.loads(rec.Result()).get("text", "")
+        if await asyncio.to_thread(rec.AcceptWaveform, data):
+            result = await asyncio.to_thread(rec.Result)
+            text = json.loads(result).get("text", "")
             if text:
                 logger.info("vosk: final='%s'", text)
             for w in _tokens_from_text(text):
@@ -218,8 +231,14 @@ async def _template_loop(websocket: WebSocket, emit) -> None:
     segmenter = StreamingSegmenter()
     while True:
         data = await websocket.receive_bytes()
-        for segment in segmenter.push(data):
-            key = _template_matcher.match(segment)
+        if len(data) > MAX_WS_FRAME_BYTES:
+            logger.warning("template: dropping oversize frame (%d bytes)", len(data))
+            continue
+        # silero-vad runs torch ops; offload so async loop stays free.
+        segments = await asyncio.to_thread(segmenter.push, data)
+        for segment in segments:
+            # Resemblyzer + DTW are the heavy CPU stage; thread them too.
+            key = await asyncio.to_thread(_template_matcher.match, segment)
             if key:
                 await emit(key)
 
@@ -253,19 +272,23 @@ async def _hybrid_loop(websocket: WebSocket, emit) -> None:
     rolling_max = SAMPLE_RATE * 2 * 6  # ~6 s of int16 16 kHz audio
 
     async def maybe_emit(key: str) -> None:
-        ok, cos = _speaker_match(bytes(utterance_bytes))
+        ok, cos = await asyncio.to_thread(_speaker_match, bytes(utterance_bytes))
         logger.info("hybrid: phrase=%s speaker_cos=%.3f gate=%s", key, cos, "OK" if ok else "FAIL")
         if ok:
             await emit(key)
 
     while True:
         data = await websocket.receive_bytes()
+        if len(data) > MAX_WS_FRAME_BYTES:
+            logger.warning("hybrid: dropping oversize frame (%d bytes)", len(data))
+            continue
         utterance_bytes.extend(data)
         if len(utterance_bytes) > rolling_max:
             del utterance_bytes[: len(utterance_bytes) - rolling_max]
 
-        if rec.AcceptWaveform(data):
-            text = json.loads(rec.Result()).get("text", "")
+        if await asyncio.to_thread(rec.AcceptWaveform, data):
+            result = await asyncio.to_thread(rec.Result)
+            text = json.loads(result).get("text", "")
             for w in _tokens_from_text(text):
                 final_tokens.append(w)
                 key = _match_trigger_at_tail(list(final_tokens))
@@ -277,7 +300,8 @@ async def _hybrid_loop(websocket: WebSocket, emit) -> None:
             keep = min(len(utterance_bytes), SAMPLE_RATE * 2)
             del utterance_bytes[: len(utterance_bytes) - keep]
         else:
-            partial_text = json.loads(rec.PartialResult()).get("partial", "")
+            partial_raw = await asyncio.to_thread(rec.PartialResult)
+            partial_text = json.loads(partial_raw).get("partial", "")
             partial_tokens = _tokens_from_text(partial_text)
             if len(partial_tokens) <= last_partial_token_count:
                 continue
