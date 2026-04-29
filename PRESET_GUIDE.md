@@ -811,6 +811,40 @@ Some presets (e.g. Mandelverse) may exhibit a black screen if the conversion is 
 
 The Mandelverse preset in this repo demonstrates the fix: `scripts/build-mandelverse-butterchurn.mjs` applies both steps and rebuilds the JSON.
 
+### Lenient-driver shader bugs (Mac WebGL vs Windows ANGLE)
+
+The AWS milkdropShaderConverter Lambda intermittently produces broken GLSL where every binary operation is wrapped in `bvec(...) && bvec(...)`:
+
+```glsl
+// BROKEN output that ships when the lambda has a bad day:
+ret = vec3((bvec3((vec3(1.25) * vec3((bvec3(...) && bvec3(bias3))))) && bvec3(...)));
+uv  = vec2((bvec2(((uv - vec2(0.5)) * vec2(1.0))) && bvec2((vec2(-1, 1) + vec2(0.5)))));
+```
+
+`&&` does not exist for `bvec*` types in GLSL ES — it's strictly a boolean-scalar operator. The output is invalid.
+
+| Driver | Behavior |
+|---|---|
+| Mac WebGL (Metal backend on Safari/Chrome/Firefox/Zen) | Lenient — silently coerces or ignores → preset renders |
+| Windows ANGLE (Chrome/Firefox/Opera/Edge → D3D11) | Strict — link fails, console floods with `'&&' wrong operand types — '3-component vector of bool' && '3-component vector of bool'` and `'rad' undeclared identifier` and `'clamp' no matching overload` |
+
+**This means a preset that "works on Mac" is not validated.** Always test on Windows before shipping.
+
+**Detection**: grep the JSON for `bvec` and `&&` in `warp` / `comp` strings — should be zero (or only inside `bvecTernary0` helper bodies, which are fine when the helpers are USED instead of inlined). A clean Lambda response uses `xll_saturate_vf2`/`xll_saturate_vf3` helpers and reads naturally.
+
+```bash
+# quick check — should print zero for both
+node -e "const j=require('./src/presets/json/foo.butterchurn.json'); console.log('bvec_in_warp:', (j.warp.match(/bvec/g)||[]).length, 'bvec_in_comp:', (j.comp.match(/bvec/g)||[]).length)"
+```
+
+**Fix**: re-run the build script (`node scripts/build-<preset>-preset.mjs`). The Lambda's output varies by run — a fresh fetch usually returns the clean version.
+
+If the regen still produces `bvec && bvec`, fall back to:
+1. Drop the warp/comp shader entirely from the JSON (preset uses butterchurn's default identity warp + comp). Visual changes but preset compiles.
+2. Hand-port the source `.milk`'s HLSL warp/comp to GLSL by reading the Milkdrop sources and rewriting in plain GLSL — slow but reliable.
+
+**Prevention**: consider running each newly-built preset JSON through a headless ANGLE-backed WebGL context as part of CI to catch this before merging.
+
 ### Division by zero in custom presets
 
 When mashing presets, watch for **q-registers used in division** (`q7`, `q16` most common). If initialized to zero, the preset renders black:
