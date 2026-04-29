@@ -167,11 +167,11 @@ echo   Press Ctrl+C in this window to stop.
 echo ================================================
 echo.
 
-REM Schedule a background helper to open the browser ~6s after dev server boots.
-REM PowerShell handles the Chrome -> default-browser fallback cleanly without the
-REM quoting headaches `cmd /c start ""` causes inside another start.
+REM Schedule a background helper that polls port 5173 until vite is accepting
+REM connections, then opens the browser at /static/ (matches vite.config base).
+REM Falls back to system default browser if Chrome isn't on PATH.
 if "%OPEN_BROWSER%"=="1" (
-  start "movement-browser" /min powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 6; try { Start-Process -FilePath 'chrome' -ArgumentList 'http://localhost:5173' -ErrorAction Stop } catch { Start-Process 'http://localhost:5173' }"
+  start "movement-browser" /min powershell -NoProfile -WindowStyle Hidden -Command "$deadline = (Get-Date).AddSeconds(90); while ((Get-Date) -lt $deadline) { try { $c = New-Object Net.Sockets.TcpClient('localhost', 5173); $c.Close(); break } catch { Start-Sleep -Milliseconds 400 } }; $url = 'http://localhost:5173/static/'; try { Start-Process -FilePath 'chrome' -ArgumentList $url -ErrorAction Stop } catch { Start-Process $url }"
 )
 
 call npm run dev:small
