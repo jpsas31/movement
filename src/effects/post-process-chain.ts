@@ -495,31 +495,38 @@ export class PostProcessChain {
   ): boolean {
     if (!this.fboA || !this.fboB) return false;
 
-    // ── Activity probe: skip ALL gl work when nothing wants to render ─────────
-    // The texImage2D upload + final blit alone cost ~3 ms at full DPR; bypass
-    // when no effect is on lets the butterchurn canvas be shown directly.
-    let anyActive = false;
-    if (spiralStrength > 0.0001 || spiralZoom > 0) anyActive = true;
-    if (!anyActive && (seaAmp > 0.001 || felAmp > 0.001)) anyActive = true;
-    if (!anyActive) {
-      for (let i = 0; i < rippleAges.length; i++) {
-        if (rippleAges[i] >= 0) { anyActive = true; break; }
-      }
+    // ── Pre-compute which passes are active and how many ──────────────────────
+    // Done up front so the bypass shortcut is correct (was buggy — spiralZoom
+    // defaults to 1, so `spiralZoom > 0` made the chain never bypass) and so
+    // the LAST active pass can write straight to the canvas, eliminating the
+    // separate output blit pass that used to always run.
+    let rippleActive = false;
+    for (let i = 0; i < rippleAges.length; i++) {
+      if (rippleAges[i] >= 0) { rippleActive = true; break; }
     }
-    if (!anyActive) {
-      for (let i = 0; i < heartbeatAmps.length; i++) {
-        if (heartbeatAmps[i] > 0.0001) { anyActive = true; break; }
-      }
+    const spiralActive =
+      Math.abs(spiralStrength) > 0.0001 || Math.abs(spiralZoom - 1) > 0.0001;
+    let heartbeatActive = false;
+    for (let i = 0; i < heartbeatAmps.length; i++) {
+      if (heartbeatAmps[i] > 0.0001) { heartbeatActive = true; break; }
     }
-    if (!anyActive) {
-      for (let i = 0; i < bhMasses.length; i++) {
-        if (Math.abs(bhMasses[i]) > 0.0001) { anyActive = true; break; }
-      }
+    let blackholeActive = false;
+    for (let i = 0; i < bhMasses.length; i++) {
+      if (Math.abs(bhMasses[i]) > 0.0001) { blackholeActive = true; break; }
     }
-    if (!anyActive) return false;
+    const seaActive = seaAmp > 0.001;
+    const felActive = felAmp > 0.001;
+
+    const activeCount =
+      (rippleActive ? 1 : 0) +
+      (spiralActive ? 1 : 0) +
+      (heartbeatActive ? 1 : 0) +
+      (blackholeActive ? 1 : 0) +
+      (seaActive ? 1 : 0) +
+      (felActive ? 1 : 0);
+    if (activeCount === 0) return false;
 
     const gl = this.gl;
-
     gl.activeTexture(gl.TEXTURE0);
 
     // ── Upload butterchurn (ONE cross-context readback) ───────────────────────
@@ -528,111 +535,98 @@ export class PostProcessChain {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 
-    // ── Conditional intermediate passes (screen res) ──────────────────────────
-    // cur tracks the latest result texture; nextFbo alternates between 0/1 so each
-    // active pass writes to whichever FBO is NOT currently being read.
-    // Passes are fully inlined — no closures, no per-frame allocations.
+    // ── Conditional intermediate passes ───────────────────────────────────────
+    // The last active pass binds the default framebuffer (canvas) instead of
+    // an FBO so its draw IS the user-visible output — no separate blit needed.
+    // FBO size equals canvas size (see resize()), so no scaling is required.
     let cur: WebGLTexture = this.srcTex;
     let nextFbo = 0;
-
-    gl.viewport(0, 0, this.sw, this.sh);
+    let passIdx = 0;
+    const sw = this.sw;
+    const sh = this.sh;
+    const fboA = this.fboA;
+    const fboB = this.fboB;
+    // bindOutput sets framebuffer + viewport for the next pass; on the final
+    // pass it points to the canvas. Must be called immediately before drawArrays.
+    const bindOutput = (): WebGLTexture | null => {
+      passIdx++;
+      if (passIdx === activeCount) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, sw, sh);
+        return null; // last pass — cur not needed afterwards
+      }
+      const target = nextFbo === 0 ? fboA : fboB;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+      gl.viewport(0, 0, sw, sh);
+      nextFbo ^= 1;
+      return target.tex;
+    };
 
     // ── Ripple ────────────────────────────────────────────────────────────────
-    let rippleActive = false;
-    for (let i = 0; i < rippleAges.length; i++) {
-      if (rippleAges[i] >= 0) { rippleActive = true; break; }
-    }
     if (rippleActive) {
-      const target = nextFbo === 0 ? this.fboA : this.fboB;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+      const out = bindOutput();
       gl.useProgram(this.progRipple);
       gl.bindTexture(gl.TEXTURE_2D, cur);
       gl.uniform1fv(this.uRippleAges, rippleAges);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      cur = target.tex;
-      nextFbo ^= 1;
+      if (out) cur = out;
     }
 
     // ── Spiral (twist + zoom) ─────────────────────────────────────────────────
-    // Active when EITHER twist or zoom deviates from identity.
-    if (Math.abs(spiralStrength) > 0.0001 || Math.abs(spiralZoom - 1) > 0.0001) {
-      const target = nextFbo === 0 ? this.fboA : this.fboB;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    if (spiralActive) {
+      const out = bindOutput();
       gl.useProgram(this.progSpiral);
       gl.bindTexture(gl.TEXTURE_2D, cur);
       gl.uniform1f(this.uSpiralStrength, spiralStrength);
       gl.uniform1f(this.uSpiralZoom,     spiralZoom);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      cur = target.tex;
-      nextFbo ^= 1;
+      if (out) cur = out;
     }
 
     // ── Heartbeat ─────────────────────────────────────────────────────────────
-    let heartbeatActive = false;
-    for (let i = 0; i < heartbeatAges.length; i++) {
-      if (heartbeatAges[i] >= 0) { heartbeatActive = true; break; }
-    }
     if (heartbeatActive) {
-      const target = nextFbo === 0 ? this.fboA : this.fboB;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+      const out = bindOutput();
       gl.useProgram(this.progHeartbeat);
       gl.bindTexture(gl.TEXTURE_2D, cur);
       gl.uniform1fv(this.uHeartbeatAges, heartbeatAges);
       gl.uniform1fv(this.uHeartbeatAmps, heartbeatAmps);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      cur = target.tex;
-      nextFbo ^= 1;
+      if (out) cur = out;
     }
 
     // ── Blackhole ─────────────────────────────────────────────────────────────
-    let blackholeActive = false;
-    for (let i = 0; i < bhMasses.length; i++) {
-      if (Math.abs(bhMasses[i]) > 0.0001) { blackholeActive = true; break; }
-    }
     if (blackholeActive) {
-      const target = nextFbo === 0 ? this.fboA : this.fboB;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+      const out = bindOutput();
       gl.useProgram(this.progBlackhole);
       gl.bindTexture(gl.TEXTURE_2D, cur);
       gl.uniform2fv(this.uBHPositions, bhPositions);
       gl.uniform1fv(this.uBHMasses,    bhMasses);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      cur = target.tex;
-      nextFbo ^= 1;
+      if (out) cur = out;
     }
 
     // ── Sea ───────────────────────────────────────────────────────────────────
-    if (seaAmp > 0.001) {
-      const target = nextFbo === 0 ? this.fboA : this.fboB;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    if (seaActive) {
+      const out = bindOutput();
       gl.useProgram(this.progSea);
       gl.bindTexture(gl.TEXTURE_2D, cur);
       gl.uniform1f(this.uSeaTime, seaTime);
       gl.uniform1f(this.uSeaAmp,  seaAmp);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      cur = target.tex;
-      nextFbo ^= 1;
+      if (out) cur = out;
     }
 
     // ── Felicidad ─────────────────────────────────────────────────────────────
-    if (felAmp > 0.001) {
-      const target = nextFbo === 0 ? this.fboA : this.fboB;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    if (felActive) {
+      const out = bindOutput();
       gl.useProgram(this.progFelicidad);
       gl.bindTexture(gl.TEXTURE_2D, cur);
       gl.uniform1f(this.uFelTime, felTime);
       gl.uniform1f(this.uFelAmp,  felAmp);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      cur = target.tex;
-      nextFbo ^= 1;
+      if (out) cur = out;
     }
 
-    // ── Output blit — always runs, simple copy of cur to canvas ───────────────
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.useProgram(this.progOutput);
-    gl.bindTexture(gl.TEXTURE_2D, cur);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     return true;
   }
 
