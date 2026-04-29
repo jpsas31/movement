@@ -46,10 +46,16 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
   },
 
   // 4-color palette cycle: pink → light-blue → lilac → mint, ~26 s full cycle.
-  // Audio reactivity (transients above baseline only — see cope+martin notes):
-  //   bass → zoom pump, mid → warp swirl, (bass+treb) → wave alpha brighten.
+  // Audio reactivity:
+  //   - idle (silent / quiet) → motion damped to 30% (zoom-deviation + warp scaled)
+  //   - peaks above baseline → bass pumps zoom, mid pumps warp, (bass+treb)
+  //     brightens wave alpha (transient-only — see cope+martin notes).
   "shifter - dark tides bdrv mix 2": {
     frameAppend: `
+      var _en = Math.max(a.bass_att, a.mid_att, a.treb_att);
+      var _motion = Math.min(1, 0.30 + 0.70*Math.max(0, _en - 1.0));
+      a.zoom = 1 + (a.zoom - 1)*_motion;
+      a.warp = a.warp*_motion;
       a.q1 = a.time*0.15 - Math.floor(a.time*0.15/4)*4;
       a.wave_r = a.q1<1 ? 1.00 : (a.q1<2 ? 0.55 : (a.q1<3 ? 0.78 : 0.55));
       a.wave_g = a.q1<1 ? 0.45 : (a.q1<2 ? 0.85 : (a.q1<3 ? 0.55 : 1.00));
