@@ -49,14 +49,19 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
     `,
   },
 
-  // 4-color palette cycle: pink → lilac → mint → light-blue, ~26 s full cycle.
-  // Audio reactivity:
-  //   - idle (silent / quiet) → motion damped (zoom + warp + warpanimspeed scaled down)
-  //   - peaks above baseline → bass pumps zoom, mid pumps warp, (bass+treb)
-  //     brightens wave alpha (transient-only — see cope+martin notes).
-  // Note: shifter's pixel_eqs is just `a.warp = a.bass;` — that runs per-pixel
-  // AFTER our frame-level warp damping, so we ALSO append a pixel-level scale
-  // to keep the swirl tame regardless of bass loudness.
+  // Static 4-color spatial palette: pink (top-left), lilac (top-right),
+  // mint (bottom-left), light-blue (bottom-right). All 4 colors visible
+  // simultaneously, smooth bilinear blend between them. NO time cycle.
+  //
+  // The original blue tones lived in TWO places:
+  //   1. `texture(sampler_main, uv) * 0.5` — previous-frame feedback that
+  //      preserved any prior blue accumulation. We multiply this sample by
+  //      the spatial palette so feedback decays toward the requested colors.
+  //   2. Two hardcoded `vec3(...)` tint multipliers on Sobel edges. Both
+  //      replaced with the spatial palette × scale.
+  //
+  // Audio reactivity (idle damped, peaks pump zoom/warp/wave_a — see
+  // cope+martin notes for the transient-only pattern).
   "shifter - dark tides bdrv mix 2": {
     baseValsSet: {
       warpanimspeed: 0.3,  // upstream default ~1.0 drives swirl-pattern animation rate
@@ -69,28 +74,26 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
       var _motion = Math.min(1, 0.10 + 0.30*Math.max(0, _en - 1.0));
       a.zoom = 1 + (a.zoom - 1)*_motion;
       a.warp = a.warp*_motion;
-      a.q1 = a.time*0.15 - Math.floor(a.time*0.15/4)*4;
-      // pink (1.00,0.45,0.75) | lilac (0.78,0.55,1.00) | mint (0.55,1.00,0.78) | light-blue (0.55,0.85,1.00)
-      a.wave_r = a.q1<1 ? 1.00 : (a.q1<2 ? 0.78 : (a.q1<3 ? 0.55 : 0.55));
-      a.wave_g = a.q1<1 ? 0.45 : (a.q1<2 ? 0.55 : (a.q1<3 ? 1.00 : 0.85));
-      a.wave_b = a.q1<1 ? 0.75 : (a.q1<2 ? 1.00 : (a.q1<3 ? 0.78 : 1.00));
-      // q15-q17 piped to comp shader via compReplace below — drives the
-      // Sobel-edge tint that the preset uses for its dominant colour. We
-      // re-use a.wave_r/g/b values to keep palette in sync.
-      a.q15 = a.wave_r;
-      a.q16 = a.wave_g;
-      a.q17 = a.wave_b;
       a.zoom = a.zoom + 0.025*Math.max(0, a.bass_att - 1.0);
       a.warp = a.warp + 0.25*Math.max(0, a.mid_att - 1.0);
       a.wave_a = Math.min(1, (a.wave_a !== undefined ? a.wave_a : 0.5) + 0.4*Math.max(0, (a.bass_att + a.treb_att)*0.5 - 1.0));
     `,
-    // shifter's comp shader hardcodes two Sobel-edge tint vectors. Replace
-    // BOTH with our q15/q16/q17 palette uniform so the visible colour cycles
-    // through pink → lilac → mint → light-blue. Magnitudes (4.0 / 2.5)
-    // approximate the original luminance so the preset stays bright.
     compReplace: [
-      ["vec3(3.4, 2.38, 1.02)", "(vec3(q15, q16, q17) * 4.0)"],
-      ["vec3(0.68, 1.7, 2.38)", "(vec3(q15, q16, q17) * 2.5)"],
+      // Inject _palette decl right after the existing tmpvar_3 setup. Bilinear
+      // blend across uv: corners are pink (TL) / lilac (TR) / mint (BL) / light-blue (BR).
+      [
+        "tmpvar_3 = (tmpvar_2 * 2.5);",
+        "tmpvar_3 = (tmpvar_2 * 2.5);\n  vec3 _palette = mix(mix(vec3(1.00,0.45,0.75), vec3(0.78,0.55,1.00), uv.x), mix(vec3(0.55,1.00,0.78), vec3(0.55,0.85,1.00), uv.x), uv.y);",
+      ],
+      // Multiply previous-frame feedback by the palette so the dark-blue clear
+      // colour decays out instead of accumulating.
+      [
+        "(texture (sampler_main, uv).xyz * 0.5)",
+        "(texture (sampler_main, uv).xyz * _palette * 1.2)",
+      ],
+      // Replace the two hardcoded Sobel tint vectors with the spatial palette.
+      ["vec3(3.4, 2.38, 1.02)", "(_palette * 4.0)"],
+      ["vec3(0.68, 1.7, 2.38)", "(_palette * 2.5)"],
     ],
   },
 };
