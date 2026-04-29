@@ -53,15 +53,15 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
   "shifter - dark tides bdrv mix 2": {
     frameAppend: `
       var _en = Math.max(a.bass_att, a.mid_att, a.treb_att);
-      var _motion = Math.min(1, 0.15 + 0.40*Math.max(0, _en - 1.0));
+      var _motion = Math.min(1, 0.10 + 0.30*Math.max(0, _en - 1.0));
       a.zoom = 1 + (a.zoom - 1)*_motion;
       a.warp = a.warp*_motion;
       a.q1 = a.time*0.15 - Math.floor(a.time*0.15/4)*4;
       a.wave_r = a.q1<1 ? 1.00 : (a.q1<2 ? 0.55 : (a.q1<3 ? 0.78 : 0.55));
       a.wave_g = a.q1<1 ? 0.45 : (a.q1<2 ? 0.85 : (a.q1<3 ? 0.55 : 1.00));
       a.wave_b = a.q1<1 ? 0.75 : (a.q1<2 ? 1.00 : (a.q1<3 ? 1.00 : 0.78));
-      a.zoom = a.zoom + 0.05*Math.max(0, a.bass_att - 1.0);
-      a.warp = a.warp + 0.5*Math.max(0, a.mid_att - 1.0);
+      a.zoom = a.zoom + 0.025*Math.max(0, a.bass_att - 1.0);
+      a.warp = a.warp + 0.25*Math.max(0, a.mid_att - 1.0);
       a.wave_a = Math.min(1, (a.wave_a !== undefined ? a.wave_a : 0.5) + 0.4*Math.max(0, (a.bass_att + a.treb_att)*0.5 - 1.0));
     `,
   },
