@@ -1,4 +1,4 @@
-# Locate vosk-model-small-es-0.42 in the user's Downloads folder (or other common
+# Locate a Vosk Spanish model in the user's Downloads folder (or other common
 # locations) and stage it into backend\models\ so the dev server finds it without
 # re-downloading.
 #
@@ -7,10 +7,13 @@
 #   1 — not found anywhere; caller should fall back to a fresh download
 #   2 — found candidate but copy/extract failed
 #
-# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\find-vosk-in-downloads.ps1
+# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\find-vosk-in-downloads.ps1 [-ModelName vosk-model-es-0.42]
+
+param(
+    [string]$ModelName = 'vosk-model-es-0.42'
+)
 
 $ErrorActionPreference = 'Stop'
-$ModelName = 'vosk-model-small-es-0.42'
 $RepoRoot  = Split-Path -Parent $PSScriptRoot
 $DestRoot  = Join-Path $RepoRoot 'backend\models'
 $TargetDir = Join-Path $DestRoot $ModelName

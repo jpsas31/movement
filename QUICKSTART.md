@@ -61,6 +61,53 @@ Open `http://localhost:5173` in your browser, click the screen, and grant microp
 | `O` | Toggle options HUD |
 | `[` `]` `.` `,` | Adjust opacity |
 
+## Speaker-locked keyword recognition (default)
+
+The backend now uses a template-matching pipeline locked to a single speaker. It replaces Vosk for normal use; the Vosk path is preserved behind `RECOGNIZER=vosk`.
+
+### Enroll the target speaker
+
+1. Place 3–5 `.wav` recordings (16 kHz mono preferred — any rate works, librosa resamples) into one directory per phrase trigger:
+
+   ```
+   backend/enroll/audio/
+     te_amo/{1,2,3,4,5}.wav
+     mi_amor/{1,2,3,4,5}.wav
+     pensar_en_ti/...
+     ...
+   ```
+
+   Subdirectory name = trigger key sent over the WebSocket. Match the keys used in `backend/main.py` `TRIGGERS` (e.g. `te_amo`, `enamorada`, `tristeza`, `dejar_ir`, `futuro`, `amor`, `compartimos`, `ensenaste`, `extrano`, `felicidad`, `conectar`, `abrazo`, `pensar_en_ti`).
+
+2. (Optional but recommended) Pull a noise corpus for enrollment-time augmentation:
+
+   ```bash
+   uv run python backend/download_noise.py            # ESC-50 (~600 MB single zip, default)
+   uv run python backend/download_noise.py --source musan   # MUSAN (11 GB tar; only noise/ kept ~200 MB)
+   ```
+
+   Files land in `backend/noise/`. Enrollment mixes each clean take with random noise at 5/10/15 dB SNR to widen DTW matching basins.
+
+3. Build templates + speaker embedding:
+
+   ```bash
+   uv run python backend/enroll.py                    # noise-augmented (3 variants per clean)
+   uv run python backend/enroll.py --no-augment       # clean-only
+   uv run python backend/enroll.py --aug-per 5        # more augmentation per clean take
+   ```
+
+   Outputs `backend/templates/speaker.npy` and `backend/templates/phrases.npz`.
+
+4. Start the backend normally — `RECOGNIZER=template` is the default.
+
+   Tunable env vars (matcher only): `VAD_THRESHOLD` (default 0.5), `SPEAKER_THRESHOLD` (default 0.65).
+
+### Fall back to Vosk
+
+```bash
+RECOGNIZER=vosk npm run dev:backend
+```
+
 ## Other commands
 
 ```bash

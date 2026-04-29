@@ -1,5 +1,6 @@
-const DOWNSAMPLE_RATIO = 3; // 48 kHz → 16 kHz
-const CHUNK_SAMPLES = 1600; // ~100 ms at 16 kHz
+// AudioContext is pinned to 16 kHz in audio-input.ts. No downsampling here.
+// CHUNK_SAMPLES = 1600 -> ~100 ms per WS frame, multiple of silero's 512-sample step.
+const CHUNK_SAMPLES = 1600;
 
 class WsAudioProcessor extends AudioWorkletProcessor {
   private buffer = new Int16Array(CHUNK_SAMPLES);
@@ -9,7 +10,7 @@ class WsAudioProcessor extends AudioWorkletProcessor {
     const channel = inputs[0]?.[0];
     if (!channel) return true;
 
-    for (let i = 0; i < channel.length; i += DOWNSAMPLE_RATIO) {
+    for (let i = 0; i < channel.length; i++) {
       const sample = Math.max(-1, Math.min(1, channel[i]));
       this.buffer[this.bufferIndex++] = sample * 32767;
 

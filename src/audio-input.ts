@@ -68,7 +68,12 @@ export async function createAudioAnalyserRig(options?: {
   onTrigger?: (trigger: string) => void;
 }): Promise<AudioAnalyserRig> {
   const logPrefix = options?.logPrefix ?? "[audio]";
-  const audioCtx = new AudioContext();
+  // Pin AudioContext to 16 kHz so the WS audio path (worklet -> backend) hits
+  // exactly the sample rate silero-vad / Resemblyzer / DTW templates expect.
+  // The default rate is system-dependent (44.1, 48, or 96 kHz) — fixed here so
+  // a hardcoded downsample ratio in audio-processor.ts isn't needed.
+  const audioCtx = new AudioContext({ sampleRate: 16000 });
+  console.log(logPrefix, "AudioContext sampleRate:", audioCtx.sampleRate);
   const analyser = audioCtx.createAnalyser();
   analyser.fftSize = 512;
   const inputGain = audioCtx.createGain();

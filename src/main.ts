@@ -61,16 +61,11 @@ import {
   updateFelicidad,
 } from "./effects/felicidad";
 import {
-  createTristezaState,
-  isTristezaIdle,
-  toggleTristeza,
-  updateTristeza,
-} from "./effects/tristeza";
-import {
   CUSTOM_PRESET_REGISTRY,
   getCustomPresetEntry,
   rebuildAllCustomSlots,
 } from "./presets/custom-registry";
+import { applyStockOverlay } from "./presets/stock-overlays";
 import {
   MANDELVERSE_PACK_PRESET_KEY,
   mandelversePackPreset,
@@ -238,7 +233,6 @@ async function start() {
   const seaState = createSeaState();
   const nostalgiaState = createNostalgiaState();
   const felicidadState = createFelicidadState();
-  const tristezaState = createTristezaState();
 
   let vizIntensity: VizIntensity = "normal";
   const allPresets: Record<string, PresetWithBase> = {
@@ -290,6 +284,9 @@ async function start() {
     syncAnalyserGainForCurrentPreset();
     const preset = allPresets[key];
     const p = clonePresetGraphForButterchurn(preset);
+    // Stock-preset overlays — apply only when the preset has no custom builder
+    // (custom presets bake their own variants in `build(tier)`).
+    if (!entry) applyStockOverlay(key, p);
     // blendTime 0 → blendDuration 0 → blendProgress Infinity → cos(∞) is NaN in butterchurn's mixer.
     const safeBlend = blendTime <= 0 ? 1e-6 : blendTime;
     visualizer!.loadPreset(p, safeBlend);
@@ -344,14 +341,13 @@ async function start() {
       { label: "Pendulum sway (U)", value: nostalgiaState.active ? "swaying" : isNostalgiaIdle(nostalgiaState) ? "off" : "settling" },
       { label: "Sea (F)", value: seaState.active ? "on" : isSeaIdle(seaState) ? "off" : "fading" },
       { label: "Color wave (T)", value: felicidadState.active ? "on" : isFelicidadIdle(felicidadState) ? "off" : "fading" },
-      { label: "Ink drops (3)", value: tristezaState.active ? `dropping (${tristezaState.drops.length})` : isTristezaIdle(tristezaState) ? "off" : `fading (${tristezaState.drops.length})` },
       { label: "Voice (L)", value: rig.isVoiceEnabled() ? "listening" : "off" },
       { label: "Preset name (I)", value: labelVisible ? "visible" : "hidden" },
       { label: "Opacity (viz)", value: opViz },
     ]);
     const hint =
       "<div style='margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.1);opacity:.48;font-size:10px;line-height:1.45'>" +
-      "A audio · I label · O HUD · G voice-map · Q quality · Y intensity · R auto · N/B/click preset · V video file · K camera · W spiral · M spiral+zoom · E ripple · H heartbeat · X black holes · J bh-burst · C bh-merge · S bh-orbit · 4 brushstroke · D big-pulse · Z fade-black · U pendulum · F sea · T color-wave · 3 ink-drops · L voice · . , opacity" +
+      "A audio · I label · O HUD · G voice-map · Q quality · Y intensity · R auto · N/B/click preset · V video file · K camera · W spiral · M spiral+zoom · E ripple · H heartbeat · X black holes · J bh-burst · C bh-merge · S bh-orbit · 4 brushstroke · D big-pulse · Z fade-black · U pendulum · F sea · T color-wave · L voice · . , opacity" +
       "</div>";
     return rows + hint;
   });
@@ -363,7 +359,7 @@ async function start() {
   const EFFECT_BINDINGS: EffectBinding[] = [
     { effect: "Spiral",              key: "W",  voice: "futuro (12s)" },
     { effect: "Spiral + zoom",       key: "M",  voice: "pensar en ti (8s)" },
-    { effect: "Ripple",              key: "E",  voice: "tristeza (loop 8s) · abrazo (loop 8s)" },
+    { effect: "Ripple",              key: "E",  voice: "abrazo (loop 8s)" },
     { effect: "Fade to black",       key: "Z",  voice: "dejar ir" },
     { effect: "Heartbeat",           key: "H",  voice: "enamorada (8s)" },
     { effect: "Big pulse",           key: "D",  voice: "te amo" },
@@ -375,7 +371,6 @@ async function start() {
     { effect: "Pendulum sway",       key: "U",  voice: "nostalgia (5s)" },
     { effect: "Sea",                 key: "F",  voice: "amor (10s)" },
     { effect: "Color wave",          key: "T",  voice: "felicidad (5s)" },
-    { effect: "Ink drops",           key: "3",  voice: "tristeza (8s)" },
   ];
   const voiceMapHud = createOptionsSummaryHud("Effects ↔ voice (G)", () =>
     buildRows(
@@ -502,12 +497,6 @@ async function start() {
         onToggle: () => toggleFelicidad(felicidadState),
       },
       {
-        label: "Ink drops",
-        shortcut: "3",
-        getValue: () => (tristezaState.active ? `on (${tristezaState.drops.length})` : isTristezaIdle(tristezaState) ? "off" : "fading"),
-        onToggle: () => toggleTristeza(tristezaState),
-      },
-      {
         label: "Voice",
         shortcut: "L",
         getValue: () => (rig.isVoiceEnabled() ? "on" : "off"),
@@ -594,9 +583,6 @@ async function start() {
   const felicidadOff = () => {
     if (felicidadState.active) toggleFelicidad(felicidadState);
   };
-  const tristezaOff = () => {
-    if (tristezaState.active) toggleTristeza(tristezaState);
-  };
 
   // A trigger is either:
   // - one-shot: fire once, effect self-expires (heart pulse, ripple pulse, preset change)
@@ -618,17 +604,18 @@ async function start() {
     // ── Timed: turn an effect on for N seconds, then auto-off ─────────────────
     amor:         { kind: "timed", on: () => { if (!seaState.active) toggleSea(seaState); }, off: amorOff, durationMs: 10_000 },
     enamorada:    { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 8_000 },
+    siento:       { kind: "timed", on: heartbeatLoopOn, off: heartbeatLoopOff, durationMs: 8_000 },
     pensar_en_ti: { kind: "timed", on: () => { if (!spiralState.zoomActive) toggleSpiralZoom(spiralState); }, off: pensarEnTiOff, durationMs: 8_000 },
 
     // abrazo = drop falling, repeated, slow constant 8s → ripple loop, NOT heartbeat.
     abrazo:       { kind: "timed", on: rippleLoopOn,    off: rippleLoopOff,    durationMs: 8_000 },
-    tristeza:     { kind: "timed", on: () => { if (!tristezaState.active) toggleTristeza(tristezaState); }, off: tristezaOff, durationMs: 8_000 },
 
     // compartimos doc = 8s (not 15).
     compartimos:  { kind: "timed", on: () => { if (!hasScriptedSharing(blackholeState)) toggleSharing(blackholeState); }, off: compartimosOff, durationMs: 8_000 },
     ensenaste:    { kind: "once",  fire: () => triggerBrush(blackholeState) },
     futuro:       { kind: "timed", on: () => { if (!spiralState.active) toggleSpiral(spiralState); },           off: futuroOff,    durationMs: 12_000 },
     nostalgia:    { kind: "timed", on: () => { if (!nostalgiaState.active) toggleNostalgia(nostalgiaState); },  off: nostalgiaOff, durationMs: 5_000 },
+    recuerdo:     { kind: "timed", on: () => { if (!nostalgiaState.active) toggleNostalgia(nostalgiaState); },  off: nostalgiaOff, durationMs: 5_000 },
     felicidad:    { kind: "timed", on: () => { if (!felicidadState.active) toggleFelicidad(felicidadState); },  off: felicidadOff, durationMs: 5_000 },
   };
 
@@ -778,12 +765,6 @@ async function start() {
       console.log("[felicidad]", felicidadState.active ? "on" : "off");
       return;
     }
-    if (e.key === "3") {
-      e.preventDefault();
-      toggleTristeza(tristezaState);
-      console.log("[tristeza]", tristezaState.active ? "on" : "off");
-      return;
-    }
     if (e.key === "4") {
       e.preventDefault();
       triggerBrush(blackholeState);
@@ -852,7 +833,6 @@ async function start() {
     const { positions: bhPositions, masses: bhMasses } = getBlackholeUniforms(blackholeState);
     const { time: seaTime, amp: seaAmp } = updateSea(seaState);
     const { time: felTime, amp: felAmp } = updateFelicidad(felicidadState);
-    const { positions: dropPositions, ages: dropAges, seeds: dropSeeds, time: dropTime } = updateTristeza(tristezaState);
     const spiral = updateSpiral(spiralState);
     postProcessChain.render(
       canvas,
@@ -867,10 +847,6 @@ async function start() {
       seaAmp,
       felTime,
       felAmp,
-      dropPositions,
-      dropAges,
-      dropSeeds,
-      dropTime,
     );
     // Nostalgia pendulum — CSS transform on display canvas, compositor only.
     const nostAngle = updateNostalgia(nostalgiaState);

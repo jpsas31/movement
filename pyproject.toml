@@ -6,11 +6,18 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.135.1",
+    "librosa>=0.10.2",
+    "numpy>=1.26",
     "onnxruntime>=1.24.4",
     "opencv-python>=4.13.0.92",
+    "resemblyzer>=0.1.4",
+    "scipy>=1.13",
+    "silero-vad>=5.1",
     "sounddevice>=0.5.5",
+    "soundfile>=0.12.1",
     "uvicorn[standard]>=0.42.0",
     "vosk>=0.3.42",
+    "webrtcvad>=2.0.10",
 ]
 
 [dependency-groups]
