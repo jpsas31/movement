@@ -42,6 +42,41 @@ if errorlevel 1 (
   exit /b 1
 )
 
+where git >nul 2>&1
+if errorlevel 1 (
+  echo [setup] Installing Git via winget...
+  winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements --silent
+  if errorlevel 1 (
+    echo [ERROR] Git install failed.
+    pause
+    exit /b 1
+  )
+  call :refresh_path
+)
+
+REM --- Auto-update from origin/main (destructive, main-only) --------------
+git rev-parse --is-inside-work-tree >nul 2>&1
+if not errorlevel 1 (
+  for /f "delims=" %%B in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "CUR_BRANCH=%%B"
+  if /I "!CUR_BRANCH!"=="main" (
+    echo [update] Fetching origin/main...
+    git fetch origin main
+    if errorlevel 1 (
+      echo [WARN]  git fetch failed ^(offline?^). Continuing with local copy.
+    ) else (
+      echo [update] Resetting working tree to origin/main ^(destructive^)...
+      git reset --hard origin/main
+      if errorlevel 1 (
+        echo [WARN]  git reset failed. Continuing with local copy.
+      )
+    )
+  ) else (
+    echo [update] On branch '!CUR_BRANCH!' ^(not main^). Skipping auto-update.
+  )
+) else (
+  echo [update] Not a git repo. Skipping auto-update.
+)
+
 where node >nul 2>&1
 if errorlevel 1 (
   echo [setup] Installing Node.js LTS via winget...
