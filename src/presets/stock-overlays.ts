@@ -79,21 +79,24 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
       a.wave_a = Math.min(1, (a.wave_a !== undefined ? a.wave_a : 0.5) + 0.4*Math.max(0, (a.bass_att + a.treb_att)*0.5 - 1.0));
     `,
     compReplace: [
-      // Inject _palette decl right after the existing tmpvar_3 setup. Bilinear
-      // blend across uv: corners are pink (TL) / lilac (TR) / mint (BL) / light-blue (BR).
+      // Inject _palette decl. Quadrant-based with narrow smoothstep transition
+      // (uv.* in [0.4, 0.6]) so each corner shows its PURE colour over most of
+      // its quadrant — bilinear blend was averaging everything to a muddy mix.
+      // TL=pink, TR=lilac, BL=mint, BR=light-blue.
       [
         "tmpvar_3 = (tmpvar_2 * 2.5);",
-        "tmpvar_3 = (tmpvar_2 * 2.5);\n  vec3 _palette = mix(mix(vec3(1.00,0.45,0.75), vec3(0.78,0.55,1.00), uv.x), mix(vec3(0.55,1.00,0.78), vec3(0.55,0.85,1.00), uv.x), uv.y);",
+        "tmpvar_3 = (tmpvar_2 * 2.5);\n  vec2 _t = smoothstep(vec2(0.4), vec2(0.6), uv);\n  vec3 _palette = mix(mix(vec3(1.00,0.45,0.75), vec3(0.78,0.55,1.00), _t.x), mix(vec3(0.55,1.00,0.78), vec3(0.55,0.85,1.00), _t.x), _t.y);",
       ],
-      // Multiply previous-frame feedback by the palette so the dark-blue clear
-      // colour decays out instead of accumulating.
+      // Previous-frame feedback tinted by palette. Higher mul (1.6) so colours
+      // accumulate brighter instead of decaying dark.
       [
         "(texture (sampler_main, uv).xyz * 0.5)",
-        "(texture (sampler_main, uv).xyz * _palette * 1.2)",
+        "(texture (sampler_main, uv).xyz * _palette * 1.6)",
       ],
-      // Replace the two hardcoded Sobel tint vectors with the spatial palette.
-      ["vec3(3.4, 2.38, 1.02)", "(_palette * 4.0)"],
-      ["vec3(0.68, 1.7, 2.38)", "(_palette * 2.5)"],
+      // Sobel edge tints — bumped magnitudes so colours read brighter against
+      // the high-pass differential.
+      ["vec3(3.4, 2.38, 1.02)", "(_palette * 6.0)"],
+      ["vec3(0.68, 1.7, 2.38)", "(_palette * 4.0)"],
     ],
   },
 };
