@@ -1310,6 +1310,180 @@ Skip any of these and a color will leak through.
 
 ---
 
+## Stock-Preset Overlays (Movement)
+
+When tweaking presets that ship in the `butterchurn-presets` npm pkg, you have two paths:
+
+1. **Light overlay** — append code to `frame_eqs_str` / `pixel_eqs_str` and string-replace literals in `comp` / `warp` GLSL. Lives in `src/presets/stock-overlays.ts`. Best for color tints, audio reactivity, motion damping that don't need the preset's full equation rewritten.
+2. **JSON-backed deep variant** (gunthry-style) — snapshot the upstream preset to `src/presets/json/<name>.butterchurn.json`, import it from a TS module under `src/presets/`, deeply modify in TS at module load, and register in `main.ts` `allPresets`. Best for slow-down rewrites where you need to scale every `Math.sin(K*a.time)` coefficient or restructure equations.
+
+### Overlay system (`stock-overlays.ts`)
+
+```ts
+type StockOverlay = {
+  baseValsSet?: Partial<Record<string, number>>;
+  frameAppend?: string;   // appended to frame_eqs_str (runs AFTER preset)
+  pixelAppend?: string;   // appended to pixel_eqs_str (runs AFTER preset)
+  compReplace?: ReadonlyArray<readonly [string, string]>;  // exact-string substitutions in comp GLSL
+};
+```
+
+Applied at `loadPreset()` time after `clonePresetGraphForButterchurn` (fresh JSON clone — never mutates the cached upstream object).
+
+### Critical gotchas
+
+#### 1. butterchurn-presets ships **compiled JS**, not Milkdrop EEL
+
+```js
+// frame_eqs_str sample from upstream:
+a.wave_r=.5+.5*Math.sin(1.6*a.time);
+a.warp=2;
+a.ob_r+=a.wave_b*above(Math.sin(.1*a.time),0);
+```
+
+Variables namespaced as `a.<var>`. So `frameAppend` MUST use `a.zoom`, `a.warp`, `a.bass`, `a.q1`, etc. Use JS ternaries (`cond ? x : y`) — `if(c,a,b)` is treated as JS keyword and throws `SyntaxError: expected expression, got keyword 'if'`. Symptoms when you forget: `ReferenceError: zoom is not defined` (no `a.` prefix) or syntax error on `if`.
+
+#### 2. `*_att` auto-levels — kills sustained reactivity
+
+`bass_att / mid_att / treb_att` are auto-leveled — they normalize toward 1.0 over ~seconds. Sustained loud audio sees them shrink back near 1, so `Math.max(0, att-1)` decays toward zero and reactivity dies after a few seconds.
+
+For sustained reactivity (e.g. always-pumping zoom on every beat for a long song): use raw `a.bass`, `a.mid`, `a.treb`. They stay raw 0..3+ regardless of duration.
+
+For transient-only kicks (only flash on peaks, ignore baseline): keep `Math.max(0, att - 1)`.
+
+#### 3. `wave_r/g/b` is NOT always the visible color source
+
+Some presets render their dominant colors via **hardcoded `vec3` literals in the comp shader**, not from `wave_r/g/b`. Setting `a.wave_r/g/b` does nothing visible.
+
+Detect: dump `p.comp` and grep for `vec3(`. If the shader has hardcoded color vectors driving the output (`ret_1 = ret_1 + (vec3(R,G,B) * ...)`), those override `wave_r/g/b`.
+
+Fix: use `compReplace` to swap the literals for either:
+- A spatial palette `vec3(...)` from a `mix(mix(...), mix(...), uv.y)` corner blend
+- A `q`-uniform reference (`vec3(q15, q16, q17)`) you populate from frame_eqs
+- A computed expression like `(_palette * 4.0)` after injecting a local `vec3 _palette = …;` decl
+
+Example (shifter — pink/lilac/mint/light-blue spatial palette):
+
+```ts
+compReplace: [
+  // Inject _palette decl after the existing tmpvar setup
+  [
+    "tmpvar_3 = (tmpvar_2 * 2.5);",
+    "tmpvar_3 = (tmpvar_2 * 2.5);\n  vec2 _t = smoothstep(vec2(0.4), vec2(0.6), uv);\n  vec3 _palette = mix(mix(vec3(1.00,0.45,0.75), vec3(0.78,0.55,1.00), _t.x), mix(vec3(0.55,1.00,0.78), vec3(0.55,0.85,1.00), _t.x), _t.y);",
+  ],
+  // Swap hardcoded color literals
+  ["vec3(3.4, 2.38, 1.02)", "(_palette * 6.0)"],
+  ["vec3(0.68, 1.7, 2.38)", "(_palette * 4.0)"],
+],
+```
+
+#### 4. Spatial palette beats time-cycle palette for "all 4 colors visible"
+
+If user wants 4 distinct colors visible **simultaneously**, don't cycle through them via `time` — they'll only see one slot at a time. Use a `uv`-driven blend instead:
+
+```glsl
+vec2 _t = smoothstep(vec2(0.4), vec2(0.6), uv);
+vec3 _palette = mix(
+  mix(vec3(R0,G0,B0), vec3(R1,G1,B1), _t.x),  // top edge
+  mix(vec3(R2,G2,B2), vec3(R3,G3,B3), _t.x),  // bottom edge
+  _t.y                                          // blend top → bottom
+);
+```
+
+`smoothstep(0.4, 0.6, uv)` over plain `uv` gives sharp quadrants with thin transitions — pure colors over ~80% of each quadrant. Plain `mix(..., uv.y)` averages everything to a muddy mix.
+
+#### 5. Comp shader edges → empty zones stay black
+
+Many presets only paint along Sobel-edge differentials (`+= vec3(...) * (sample_a - sample_b)`). Where the preset has no edges, the pixel stays at the previous-frame feedback. If you replace the feedback with a tinted version, those zones still depend on the prior frame having color.
+
+Fix: replace the feedback sample with `_palette * (floor + luminance * scale)`:
+
+```ts
+[
+  "(texture (sampler_main, uv).xyz * 0.5)",
+  "(_palette * (0.55 + dot(texture(sampler_main, uv).xyz, vec3(0.30, 0.59, 0.11)) * 2.0))",
+],
+```
+
+`0.55` floor → every pixel always shows palette at 55%. `luminance * 2.0` → motion brightens it. Now empty zones still display the corner's color.
+
+#### 6. `pixel_eqs_str` runs AFTER `frame_eqs_str`
+
+Per-pixel runs once per mesh vertex (~1700×/frame), AFTER per-frame. So if `pixel_eqs` reassigns `a.warp = a.bass`, your `frameAppend` damping of `a.warp` is overwritten. Solution: also append to `pixel_eqs_str` with `pixelAppend`.
+
+#### 7. Audio gate for genuine stillness at silence
+
+Floor + slope (`0.05 + 0.6*en`) leaves residual motion at silence. To make idle FULLY still, multiply everything by a gate:
+
+```js
+var _en = (a.bass + a.mid + a.treb) * 0.5;
+var _gate = Math.min(1, _en * 6.0);   // 0 below en≈0.17, 1 above
+a.zoom = 1 + (a.zoom - 1)*_gate*_motion;
+a.warp = a.warp*_gate*_motion;
+a.warpanimspeed = 0.3*_gate;          // critical — drives the warp shader's own animation
+a.wave_a = _gate * 0.18;
+```
+
+`warpanimspeed` is the easy-to-miss one — the warp shader's swirl pattern animates regardless of zoom/warp magnitudes unless this is gated.
+
+### JSON-backed slow variants (gunthry-style)
+
+Pattern for deeply modifying upstream presets (used for Aderrasi Potion of Spirits, Flexi mindblob, Zylot Paint Spill, Zylot True Visionary):
+
+1. **Snapshot to JSON**: `node scripts/build-stock-preset-snapshot.mjs` (extend `PRESETS` array with `[upstreamName, outFilename]`).
+2. **Import + modify in TS**: `src/presets/<name>-slow.ts` imports the JSON, deep-clones, mutates baseVals + transforms `frame_eqs_str` / `pixel_eqs_str`, exports.
+3. **Register in `main.ts`**: add to `allPresets[KEY_SORTED] = preset;` and **remove the original from `SELECTED_STOCK_PRESETS`** (otherwise both load and the upstream wins by alphabetical order or last-write).
+
+#### Time-coefficient scaling helper
+
+`src/presets/preset-slowdown.ts` exports `scaleTimeCoeff(src, factor)` which rewrites every `Math.sin(K*a.time)` / `Math.cos(K*a.time)` / `Math.tan(K*a.time)` (and bare `Math.sin(a.time)`) to multiply `K` by `factor`. Spatial trig (`Math.cos(6*a.ang)`, `Math.sin(a.x)`) is left alone.
+
+```ts
+const TIME_FACTOR = 0.30;  // 3.3× slower
+src.pixel_eqs_str = scaleTimeCoeff(src.pixel_eqs_str, TIME_FACTOR);
+```
+
+For preset-specific motion magnitudes (e.g. Aderrasi's `.05*equal(...)*Math.sin(5*a.time)` for dx_r), add per-preset string replacements:
+
+```ts
+src.pixel_eqs_str = src.pixel_eqs_str
+  .replace(/a\.dx_r=\.05\*/g,    `a.dx_r=${(0.05 * MOTION_FACTOR).toFixed(4)}*`)
+  .replace(/a\.zoom-=\.0825\*/g, `a.zoom-=${(0.0825 * MOTION_FACTOR).toFixed(4)}*`);
+```
+
+#### Spring-physics presets need different scaling
+
+Flexi mindblob has zero `Math.sin(K*a.time)` calls — its motion comes from a spring rig:
+
+```js
+a.spring=18; a.dt=.0003;   // stiffness + integration timestep
+a.vx2 = a.vx2*(1-a.resist*a.dt) + a.dt*(a.x1+a.x3-2*a.x2)*a.spring;
+```
+
+Slow it by scaling `dt` (sim time-step) and `spring` (stiffness):
+
+```ts
+src.frame_eqs_str = src.frame_eqs_str
+  .replace(/a\.dt=\.0003/g, `a.dt=${(0.0003 * 0.7).toFixed(6)}`)
+  .replace(/a\.spring=18/g, `a.spring=${(18 * 0.7).toFixed(2)}`);
+```
+
+`scaleTimeCoeff` is a no-op here.
+
+### When overlay vs JSON-backed?
+
+| Need | Use overlay | Use JSON-backed |
+|---|---|---|
+| Re-tint colors via `wave_r/g/b` | ✅ | overkill |
+| Audio reactivity tweaks | ✅ | overkill |
+| Replace hardcoded `vec3` in shader | ✅ via `compReplace` | also fine |
+| Slow down by 0.6–1.0× | ✅ via `frameAppend` damping | ✅ |
+| Slow down aggressively (0.3× or less) | ❌ damping doesn't reach pixel_eqs time coeffs | ✅ via `scaleTimeCoeff` |
+| Restructure equations / change motion topology | ❌ | ✅ |
+| Need preset to remain editable as JSON file | ❌ | ✅ |
+
+---
+
 ## Quick Reference
 
 ### Butterchurn `_str` equation cheat sheet
