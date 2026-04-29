@@ -126,7 +126,13 @@ const FS_HEARTBEAT = /* glsl */ `
 // Pure gravitational lensing — no color overlay.
 // mass > 0 → UV pulled toward hole; mass < 0 → UV pushed away.
 // mass oscillates via sine in JS, so each hole continuously cycles attract↔repel.
-// mass ≈ 0 at transition: active=step(0.0001,|mass|) fades lensing smoothly to zero.
+//
+// Smooth fade-out: as |mass| → 0 we shrink BOTH the dark disc and its rim
+// proportionally (so the ball physically gets smaller, not just dimmer) AND
+// fade their opacity smoothly — no `step()` pop. Lensing displacement also
+// uses a smoothstep gate so the UV pull dies off without a hard cliff. This
+// makes every blackhole-driven effect (X toggle / extraño / conectar /
+// ensenaste / compartimos / fadeout) disappear gracefully.
 const FS_BLACKHOLE = /* glsl */ `
   precision highp float;
   uniform sampler2D uTex;
@@ -134,7 +140,9 @@ const FS_BLACKHOLE = /* glsl */ `
   uniform float uBHMass[${BH_MAX}];
   varying vec2 vUv;
 
-  const float LENS = 0.006;
+  const float LENS    = 0.006;
+  const float DISC_R0 = 0.020;     // disc radius at full mass (|mass| ≥ 1)
+  const float RIM_W0  = 0.000009;  // rim width-squared at full mass (used in exp falloff)
 
   void main() {
     vec2  uv       = vUv;
@@ -142,19 +150,33 @@ const FS_BLACKHOLE = /* glsl */ `
     float rimLight = 0.0;
 
     for (int i = 0; i < ${BH_MAX}; i++) {
-      float mass   = uBHMass[i];
-      float active = step(0.0001, abs(mass));
+      float mass = uBHMass[i];
+      float ms   = abs(mass);
+      // Visibility envelope — smooth on/off centred on |mass|.
+      // Soft ramp from 0 → ~0.05; below that the hole is invisible.
+      float vis  = smoothstep(0.0, 0.05, ms);
+      // Size envelope — saturates at |mass|=1 so peak-mass scripted effects
+      // (e.g. extraño at |mass|=2) keep full size; otherwise scales linearly.
+      float sz   = clamp(ms, 0.0, 1.0);
+
+      // Lensing — multiply by vis so the UV pull also fades smoothly.
       vec2  d = uv - uBHPos[i];
       float r = length(d) + 1e-5;
-      uv -= (d / r) * (mass * LENS / (r * r + 0.001)) * active;
+      uv -= (d / r) * (mass * LENS / (r * r + 0.001)) * vis;
 
-      // Dark disc + thin bright rim to make the edge visible.
-      float ro    = length(vUv - uBHPos[i]) + 1e-5;
-      float halo  = smoothstep(0.020, 0.008, ro) * active;
-      float rdiff = ro - 0.020;
-      float rim   = exp(-(rdiff * rdiff) / 0.000009) * active;
-      darkness    = max(darkness, halo);
-      rimLight    = max(rimLight,  rim);
+      // Disc + rim — radius and rim sharpness scale with size envelope.
+      // As mass → 0, the disc shrinks to a point and the rim narrows with it.
+      float ro      = length(vUv - uBHPos[i]) + 1e-5;
+      float discR   = DISC_R0 * sz;
+      float discIn  = discR * 0.40;
+      float halo    = smoothstep(discR, discIn, ro) * vis;
+      float rdiff   = ro - discR;
+      // Floor on rimW so the exp() doesn't divide by ~0 when sz is tiny.
+      float rimW    = max(RIM_W0 * sz * sz, 1e-7);
+      float rim     = exp(-(rdiff * rdiff) / rimW) * vis;
+
+      darkness = max(darkness, halo);
+      rimLight = max(rimLight, rim);
     }
 
     vec4 base = texture2D(uTex, clamp(uv, 0.0, 1.0));

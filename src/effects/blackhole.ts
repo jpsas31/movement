@@ -232,8 +232,9 @@ const SHARING_DANCE_PERIOD = 3.0; // seconds per full orbit
 const SHARING_RAMP         = 1.5; // seconds to grow dance radius from 0 → full
 
 /** Extraño — figures separate rápido. One-shot repel pulse from a pair of scripted
- *  holes on the horizontal midline. Mass rises fast, decays over ~0.7 s, then holes
- *  auto-remove. Re-firing while active replaces the in-flight pair. */
+ *  holes that start near canvas centre and shoot apart along a randomly-chosen
+ *  axis. Mass rises fast, decays gently, then holes auto-remove. Re-firing
+ *  while active replaces the in-flight pair (with a fresh random axis). */
 export function triggerMissing(state: BlackHoleState): void {
   // Drop any in-flight missing holes so re-trigger restarts cleanly.
   state.holes = state.holes.filter((h) => h.scripted !== "missing");
@@ -250,26 +251,41 @@ export function triggerMissing(state: BlackHoleState): void {
   // At t=MISSING_LIFETIME (2.0s): |mass| ≈ 2 * e^-4 ≈ 0.04.
   const massCurve = (t: number) =>
     MISSING_PEAK_MASS * (1 - Math.exp(-18 * t)) * Math.exp(-2.0 * t);
-  // Position: ease-out cubic over MOTION_TIME; then clamp so holes hold at edge while mass fades.
+  // Position: ease-out cubic over MOTION_TIME; then clamp so holes hold while mass fades.
   const eased = (t: number): number => {
     const u = Math.min(1, t / MISSING_MOTION_TIME);
     return 1 - Math.pow(1 - u, 3);
   };
-  const leftX  = (t: number, h: BlackHole) => {
-    h.x = MISSING_START_X + (MISSING_END_X - MISSING_START_X) * eased(t);
-    h.y = 0.5;
+
+  // Random axis per trigger — holes shoot apart along (cos θ, sin θ).
+  // Distances from centre are derived from the original horizontal config so
+  // tuning MISSING_START_X / MISSING_END_X still works.
+  const angle = Math.random() * 2 * Math.PI;
+  const dirX  = Math.cos(angle);
+  const dirY  = Math.sin(angle);
+  const cx    = 0.5;
+  const cy    = 0.5;
+  const rStart = cx - MISSING_START_X; // small (holes nearly touching)
+  const rEnd   = cx - MISSING_END_X;   // large (holes far apart)
+
+  const posA = (t: number, h: BlackHole) => {
+    const r = rStart + (rEnd - rStart) * eased(t);
+    h.x = cx - dirX * r;
+    h.y = cy - dirY * r;
   };
-  const rightX = (t: number, h: BlackHole) => {
-    h.x = (1 - MISSING_START_X) + ((1 - MISSING_END_X) - (1 - MISSING_START_X)) * eased(t);
-    h.y = 0.5;
+  const posB = (t: number, h: BlackHole) => {
+    const r = rStart + (rEnd - rStart) * eased(t);
+    h.x = cx + dirX * r;
+    h.y = cy + dirY * r;
   };
+
   state.holes.push(
-    { x: MISSING_START_X, y: 0.5, vx: 0, vy: 0, mass: 0, phase: 0,
+    { x: cx - dirX * rStart, y: cy - dirY * rStart, vx: 0, vy: 0, mass: 0, phase: 0,
       scripted: "missing", scriptedElapsed: 0, scriptedLifetime: MISSING_LIFETIME,
-      scriptedMass: massCurve, scriptedPos: leftX },
-    { x: 1 - MISSING_START_X, y: 0.5, vx: 0, vy: 0, mass: 0, phase: 0,
+      scriptedMass: massCurve, scriptedPos: posA },
+    { x: cx + dirX * rStart, y: cy + dirY * rStart, vx: 0, vy: 0, mass: 0, phase: 0,
       scripted: "missing", scriptedElapsed: 0, scriptedLifetime: MISSING_LIFETIME,
-      scriptedMass: massCurve, scriptedPos: rightX },
+      scriptedMass: massCurve, scriptedPos: posB },
   );
   state.lastFrameMs = Date.now();
 }
@@ -347,7 +363,9 @@ const CONNECT_PEAK_MASS   = 1.8;   // strong attract
 const CONNECT_START_X     = 0.15;  // far apart
 const CONNECT_END_X       = 0.50;  // meet at center
 
-/** Conectar — one-shot attract pulse. Two holes rush toward center, merge, mass fades. */
+/** Conectar — one-shot attract pulse. Two holes rush toward center along a
+ *  randomly-chosen axis, merge, mass fades. Re-firing while active replaces
+ *  the in-flight pair (with a fresh random axis). */
 export function triggerConnect(state: BlackHoleState): void {
   state.holes = state.holes.filter((h) => h.scripted !== "connect");
   if (state.holes.length + 2 > MAX_BH) {
@@ -365,21 +383,34 @@ export function triggerConnect(state: BlackHoleState): void {
     const u = Math.min(1, t / CONNECT_MOTION_TIME);
     return u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
   };
-  const leftPos  = (t: number, h: BlackHole) => {
-    h.x = CONNECT_START_X + (CONNECT_END_X - CONNECT_START_X) * eased(t);
-    h.y = 0.5;
+
+  // Random axis per trigger — holes converge to centre along (cos θ, sin θ).
+  const angle = Math.random() * 2 * Math.PI;
+  const dirX  = Math.cos(angle);
+  const dirY  = Math.sin(angle);
+  const cx    = 0.5;
+  const cy    = 0.5;
+  const rStart = cx - CONNECT_START_X; // far apart
+  const rEnd   = cx - CONNECT_END_X;   // 0 → meet at centre
+
+  const posA = (t: number, h: BlackHole) => {
+    const r = rStart + (rEnd - rStart) * eased(t);
+    h.x = cx - dirX * r;
+    h.y = cy - dirY * r;
   };
-  const rightPos = (t: number, h: BlackHole) => {
-    h.x = (1 - CONNECT_START_X) + ((1 - CONNECT_END_X) - (1 - CONNECT_START_X)) * eased(t);
-    h.y = 0.5;
+  const posB = (t: number, h: BlackHole) => {
+    const r = rStart + (rEnd - rStart) * eased(t);
+    h.x = cx + dirX * r;
+    h.y = cy + dirY * r;
   };
+
   state.holes.push(
-    { x: CONNECT_START_X, y: 0.5, vx: 0, vy: 0, mass: 0, phase: 0,
+    { x: cx - dirX * rStart, y: cy - dirY * rStart, vx: 0, vy: 0, mass: 0, phase: 0,
       scripted: "connect", scriptedElapsed: 0, scriptedLifetime: CONNECT_LIFETIME,
-      scriptedMass: massCurve, scriptedPos: leftPos },
-    { x: 1 - CONNECT_START_X, y: 0.5, vx: 0, vy: 0, mass: 0, phase: 0,
+      scriptedMass: massCurve, scriptedPos: posA },
+    { x: cx + dirX * rStart, y: cy + dirY * rStart, vx: 0, vy: 0, mass: 0, phase: 0,
       scripted: "connect", scriptedElapsed: 0, scriptedLifetime: CONNECT_LIFETIME,
-      scriptedMass: massCurve, scriptedPos: rightPos },
+      scriptedMass: massCurve, scriptedPos: posB },
   );
   state.lastFrameMs = Date.now();
 }

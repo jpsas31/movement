@@ -79,6 +79,18 @@ import {
   aderrasiPotionSlowPreset,
 } from "./presets/aderrasi-potion-slow";
 import {
+  FLEXI_MINDBLOB_SLOW_PRESET_KEY_SORTED,
+  flexiMindblobSlowPreset,
+} from "./presets/flexi-mindblob-slow";
+import {
+  ZYLOT_PAINT_SPILL_SLOW_PRESET_KEY_SORTED,
+  zylotPaintSpillSlowPreset,
+} from "./presets/zylot-paint-spill-slow";
+import {
+  ZYLOT_TRUE_VISIONARY_SLOW_PRESET_KEY_SORTED,
+  zylotTrueVisionarySlowPreset,
+} from "./presets/zylot-true-visionary-slow";
+import {
   nextVizIntensity,
   VIZ_AUDIO_GAIN,
   type VizIntensity,
@@ -254,16 +266,16 @@ async function start() {
     [MANDELVERSE_PACK_PRESET_KEY]: mandelversePackPreset,
     [GUNTHRY_PINE_TREES_PRESET_KEY]: gunthryPineTreesPreset,
     [ADERRASI_POTION_SLOW_PRESET_KEY_SORTED]: aderrasiPotionSlowPreset,
+    [FLEXI_MINDBLOB_SLOW_PRESET_KEY_SORTED]: flexiMindblobSlowPreset,
+    [ZYLOT_PAINT_SPILL_SLOW_PRESET_KEY_SORTED]: zylotPaintSpillSlowPreset,
+    [ZYLOT_TRUE_VISIONARY_SLOW_PRESET_KEY_SORTED]: zylotTrueVisionarySlowPreset,
   };
 
   // Hand-picked stock butterchurn presets (curated subset of butterchurn-presets pkg).
   const SELECTED_STOCK_PRESETS = [
     "Aderrasi + Geiss - Airhandler (Kali Mix) - Canvas Mix",
     "cope + martin - mother-of-pearl",
-    "Flexi - mindblob [shiny mix]",
     "shifter - dark tides bdrv mix 2",
-    "Zylot - Paint Spill (Music Reactive Paint Mix)",
-    "Zylot - True Visionary (Final Mix)",
   ] as const;
   const stockPresets = butterchurnPresets.getPresets() as Record<string, PresetWithBase>;
   for (const k of SELECTED_STOCK_PRESETS) {
