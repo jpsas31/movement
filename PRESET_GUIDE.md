@@ -1358,7 +1358,12 @@ type StockOverlay = {
   baseValsSet?: Partial<Record<string, number>>;
   frameAppend?: string;   // appended to frame_eqs_str (runs AFTER preset)
   pixelAppend?: string;   // appended to pixel_eqs_str (runs AFTER preset)
-  compReplace?: ReadonlyArray<readonly [string, string]>;  // exact-string substitutions in comp GLSL
+  // Exact-string substitutions in comp GLSL. Each `from` must appear once;
+  // missing strings warn instead of throwing.
+  compReplace?: Array<{ from: string; to: string }>;
+  // Same idea for frame_eqs_str. Use to floor `randint(N)` calls or rewrite
+  // a specific assignment without removing surrounding randomness.
+  frameReplace?: Array<{ from: string; to: string }>;
 };
 ```
 
@@ -1401,15 +1406,34 @@ Example (shifter — pink/lilac/mint/light-blue spatial palette):
 ```ts
 compReplace: [
   // Inject _palette decl after the existing tmpvar setup
-  [
-    "tmpvar_3 = (tmpvar_2 * 2.5);",
-    "tmpvar_3 = (tmpvar_2 * 2.5);\n  vec2 _t = smoothstep(vec2(0.4), vec2(0.6), uv);\n  vec3 _palette = mix(mix(vec3(1.00,0.45,0.75), vec3(0.78,0.55,1.00), _t.x), mix(vec3(0.55,1.00,0.78), vec3(0.55,0.85,1.00), _t.x), _t.y);",
-  ],
+  {
+    from: "tmpvar_3 = (tmpvar_2 * 2.5);",
+    to: "tmpvar_3 = (tmpvar_2 * 2.5);\n  vec2 _t = smoothstep(vec2(0.4), vec2(0.6), uv);\n  vec3 _palette = mix(mix(vec3(1.00,0.45,0.75), vec3(0.78,0.55,1.00), _t.x), mix(vec3(0.55,1.00,0.78), vec3(0.55,0.85,1.00), _t.x), _t.y);",
+  },
   // Swap hardcoded color literals
-  ["vec3(3.4, 2.38, 1.02)", "(_palette * 6.0)"],
-  ["vec3(0.68, 1.7, 2.38)", "(_palette * 4.0)"],
+  { from: "vec3(3.4, 2.38, 1.02)", to: "(_palette * 6.0)" },
+  { from: "vec3(0.68, 1.7, 2.38)", to: "(_palette * 4.0)" },
 ],
 ```
+
+##### 3a. Channel-coded feedback presets — swap at FINAL output, not at edge tints
+
+Some presets (`shifter - dark tides bdrv mix 2`) run a 2-channel feedback machine in the **warp** shader: `ret.r` = "red intensity", `ret.b` = "blue intensity", `ret.g` ≈ 0. The comp shader then layers edge highlights on top via `ret_1 += vec3(...) * gradient`.
+
+Swapping just the edge `vec3` multipliers won't change the visible color — the dominant hue lives in the R and B channels of the buffer, not in the edge tints. To repalette these presets, replace the **final write** of the comp shader with a channel-remap:
+
+```ts
+compReplace: [
+  {
+    from: "tmpvar_4.xyz = ret_1;",
+    to: "tmpvar_4.xyz = max(ret_1.r, 0.0) * vec3(0.55, 1.00, 0.78) + max(ret_1.b, 0.0) * vec3(0.78, 0.55, 1.00) + max(ret_1.g, 0.0) * vec3(0.50, 0.50, 0.50);",
+  },
+],
+```
+
+R-channel content displays as mint, B-channel as lilac, G as neutral gray. Buffer math (and the warp shader's feedback loop) stays untouched — only the displayed pixel hue is mapped.
+
+How to spot a channel-coded preset: warp shader writes `ret.x`, `ret.z` from `sampler_blur1.z` (single-channel feedback) and clamps `ret.y` from a pw sampler; baseVals has `wave_a` near 0 or `wave_g`/`wave_b` zeroed; comp shader's `vec3(...)` multipliers tilt one channel hard (e.g. `vec3(3.4, 2.38, 1.02)` is red-dominant, `vec3(0.68, 1.7, 2.38)` is blue-dominant). If those describe the preset, edge-tint swaps are a dead end.
 
 #### 4. Spatial palette beats time-cycle palette for "all 4 colors visible"
 
@@ -1433,10 +1457,10 @@ Many presets only paint along Sobel-edge differentials (`+= vec3(...) * (sample_
 Fix: replace the feedback sample with `_palette * (floor + luminance * scale)`:
 
 ```ts
-[
-  "(texture (sampler_main, uv).xyz * 0.5)",
-  "(_palette * (0.55 + dot(texture(sampler_main, uv).xyz, vec3(0.30, 0.59, 0.11)) * 2.0))",
-],
+{
+  from: "(texture (sampler_main, uv).xyz * 0.5)",
+  to: "(_palette * (0.55 + dot(texture(sampler_main, uv).xyz, vec3(0.30, 0.59, 0.11)) * 2.0))",
+},
 ```
 
 `0.55` floor → every pixel always shows palette at 55%. `luminance * 2.0` → motion brightens it. Now empty zones still display the corner's color.
