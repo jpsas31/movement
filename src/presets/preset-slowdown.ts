@@ -10,7 +10,9 @@
  */
 
 /** Multiply every `Math.sin(K*a.time)` / `Math.cos(K*a.time)` / `Math.tan(K*a.time)`
- *  time coefficient by `factor`. Bare `Math.sin(a.time)` (no K) is treated as K=1. */
+ *  time coefficient by `factor`. Bare `Math.sin(a.time)` (no K) is treated as K=1.
+ *  Handles both dot (`a.time`) and bracket (`a['time']`) notation — milkdrop-preset-converter
+ *  emits bracket form, butterchurn-presets pkg emits dot form. */
 export function scaleTimeCoeff(src: string, factor: number): string {
   return src
     .replace(
@@ -20,6 +22,18 @@ export function scaleTimeCoeff(src: string, factor: number): string {
     .replace(
       /Math\.(sin|cos|tan)\(a\.time\)/g,
       (_, fn) => `Math.${fn}(${factor.toFixed(2)}*a.time)`,
+    )
+    .replace(
+      /Math\.(sin|cos|tan)\(\(([\d.]+)\s*\*\s*a\['time'\]\)\)/g,
+      (_, fn, k) => `Math.${fn}((${(parseFloat(k) * factor).toFixed(4)}*a['time']))`,
+    )
+    .replace(
+      /Math\.(sin|cos|tan)\(\(a\['time'\]\s*\*\s*([\d.]+)\)\)/g,
+      (_, fn, k) => `Math.${fn}((a['time']*${(parseFloat(k) * factor).toFixed(4)}))`,
+    )
+    .replace(
+      /Math\.(sin|cos|tan)\(a\['time'\]\)/g,
+      (_, fn) => `Math.${fn}(${factor.toFixed(2)}*a['time'])`,
     );
 }
 
