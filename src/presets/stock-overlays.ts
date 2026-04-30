@@ -78,18 +78,27 @@ export const STOCK_OVERLAYS: Record<string, StockOverlay> = {
     // feedback loop samples black forever. Switching to another preset
     // writes content into the shared buffer; coming back, shifter finds
     // it and ignites. To self-ignite from cold, briefly enable the wave
-    // for the first few seconds, then revert to the original behavior.
-    // (`a.cm = randint(3)+1` mode roll exists but q5/q6 are not read by
-    //  the comp/warp/shape code — that randomness is dead code, leave
-    //  it alone.)
-    // `a.time` is butterchurn's global wall clock — does NOT reset per
-    // preset switch, so `a.time < N` would only fire on app cold-start.
-    // Use `a.iter` instead: shifter's init_eqs sets it to 0 and frame_eqs
-    // grows it by `a.tic` (≈ frame delta seconds) until ~30, then resets.
-    // `a.iter < 2.5` ≈ "first 2.5 seconds since this preset loaded".
-    frameReplace: [
-      { from: "a.wave_a=0;", to: "a.wave_a=(a.iter<2.5?0.7:0);" },
-    ],
+    // for the first few seconds, then revert to original behavior.
+    //
+    // `a.time` is butterchurn's global wall clock and does NOT reset on
+    // preset load. Use `a.iter`: shifter's init_eqs sets it to 0 and
+    // frame_eqs grows it by `a.tic` (≈ frame delta seconds) until ~30,
+    // then resets. `a.iter < 5` ≈ "first ~5 seconds since this preset
+    // loaded".
+    //
+    // frameAppend runs AFTER the preset's own frame_eqs, so it
+    // last-write-wins over any internal `a.wave_a=0` assignment. Pin
+    // wave color to white, force `wave_brighten=1` (additive blend) and
+    // `modwavealphabyvolume=0` (no audio gating) so the seed actually
+    // hits the buffer regardless of whether music is playing.
+    frameAppend: `
+      if (a.iter < 5) {
+        a.wave_a = 0.8;
+        a.wave_r = 1; a.wave_g = 1; a.wave_b = 1;
+        a.wave_brighten = 1;
+        a.modwavealphabyvolume = 0;
+      }
+    `,
   },
 };
 
